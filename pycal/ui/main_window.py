@@ -18,7 +18,7 @@ from typing import Optional
 
 from PySide6.QtCore import (
     Qt, QPoint, Signal, QSize, QPropertyAnimation, QEasingCurve,
-    QParallelAnimationGroup, QAbstractAnimation, QRect,
+    QParallelAnimationGroup, QAbstractAnimation, QRect, QTimer,
 )
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPixmap, QPainter
 from PySide6.QtWidgets import (
@@ -178,6 +178,7 @@ class PyCalMainWindow(FloatingWindow):
         self._btn_skin = _tool_btn("🎨")
         self._btn_top = _tool_btn("📌")
         self._btn_refresh = _tool_btn("🔄")
+        self._btn_sync = _tool_btn("☁")     # 云同步
         self._btn_search = _tool_btn("🔍")
         self._btn_notes = _tool_btn("📝")
         self._btn_wall = _tool_btn("🌄")
@@ -186,8 +187,8 @@ class PyCalMainWindow(FloatingWindow):
         self._btn_exit = _tool_btn("×", danger=True)
 
         for b in (self._btn_anim, self._btn_skin, self._btn_top, self._btn_refresh,
-                  self._btn_search, self._btn_notes, self._btn_wall, self._btn_import,
-                  self._btn_min, self._btn_exit):
+                  self._btn_sync, self._btn_search, self._btn_notes,
+                  self._btn_wall, self._btn_import, self._btn_min, self._btn_exit):
             bar_layout.addWidget(b)
 
         self._top_layout.addWidget(bar)
@@ -224,6 +225,7 @@ class PyCalMainWindow(FloatingWindow):
         self._btn_next.clicked.connect(lambda: self.shift_month(+1))
         self._btn_today.clicked.connect(self.goto_today)
         self._btn_refresh.clicked.connect(self.refresh_view)
+        self._btn_sync.clicked.connect(self._open_sync)
         self._btn_search.clicked.connect(self._open_search)
         self._btn_import.clicked.connect(_import_dialog)
         self._btn_notes.clicked.connect(self._toggle_notes)
@@ -245,9 +247,16 @@ class PyCalMainWindow(FloatingWindow):
             (self._btn_anim, "月份切换动画 (开 / 关)"),
             (self._btn_skin, "切换皮肤"),
             (self._btn_top, "窗口置顶"),
+            (self._btn_sync, "云同步 (Google / iCloud / Outlook)"),
             (self._btn_min, "最小化到托盘"),
         ]:
             b.setToolTip(tip)
+
+        # 云同步: 后台定时任务 (每 15 分钟, 仅当有账号)
+        self._sync_timer = QTimer(self)
+        self._sync_timer.timeout.connect(self._auto_sync_tick)
+        self._sync_timer.start(15 * 60 * 1000)
+        QTimer.singleShot(10_000, self._auto_sync_tick)   # 启动 10s 后首跑
 
     # ------------------------------------------------------------------
     # 月份切换 — 带动画
@@ -431,6 +440,33 @@ class PyCalMainWindow(FloatingWindow):
 
     def _open_search(self) -> None:
         _search_dialog(self)
+
+    # ------------------------------------------------------------------
+    # 云同步
+    # ------------------------------------------------------------------
+    def _open_sync(self) -> None:
+        from pycal.ui.sync_dialog import SyncDialog
+        dlg = SyncDialog(self)
+        dlg.exec()
+        self.refresh_view()      # 同步后刷新月视图
+
+    def _auto_sync_tick(self) -> None:
+        """后台自动同步 — 无账号时静默跳过, 失败不打扰用户。"""
+        try:
+            from pycal.sync.accounts import list_accounts
+            accs = [a for a in list_accounts() if a.enabled]
+            if not accs:
+                return
+            from pycal.sync.engine import sync_all
+            results = sync_all()
+            total = sum(r.pulled + r.pushed for r in results)
+            if total:
+                self._count_label.setText(
+                    f"{self._count_label.text()}  ☁ 同步 {total} 条"
+                )
+                self.refresh_view()
+        except Exception:
+            pass    # 后台任务不弹窗
 
     def _toggle_notes(self) -> None:
         from pycal.notes import NotesManager

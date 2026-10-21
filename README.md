@@ -46,6 +46,9 @@ e:\todo\
 │   │   ├── month_view.py           ← 6×7 月视图 (农历/节气副标题)
 │   │   ├── editor.py               ← 4 类型编辑器
 │   │   ├── search_dialog.py        ← 5 下拉多维筛选面板 (Phase 1A)
+│   │   ├── sync_dialog.py          ← 云同步账号管理 (Phase 2)
+│   │   ├── floating_window.py      ← 可拖动 + 八向 resize
+│   │   ├── skin.py                 ← 4 种皮肤 + 不透明度
 │   │   └── color_picker.py         ← 22 色调色板 + 自定义 BGR
 │   ├── desktop/
 │   │   └── wallpaper.py            ← 读取原壁纸 + 叠加月历 + SPI_SETDESKWALLPAPER
@@ -54,6 +57,13 @@ e:\todo\
 │   ├── notes/
 │   │   └── __init__.py             ← 便签浮贴纸
 │   ├── lunar.py                    ← lunardate + 节气 + 节日 (Phase 1B)
+│   ├── sync/
+│   │   ├── presets.py              ← Google/iCloud/Outlook/通用 endpoint
+│   │   ├── accounts.py             ← 账号 CRUD + 凭据混淆 + sync_links
+│   │   ├── ical_convert.py         ← CalendarItem <-> VEVENT 双向转换
+│   │   ├── client.py               ← CaldavClient (连接/列举/拉取/推送/删除)
+│   │   ├── engine.py               ← SyncEngine 三方对比 + 冲突解决
+│   │   └── __main__.py             ← CLI: python -m pycal.sync
 │   └── mcp/
 │       ├── __init__.py             ← FastMCP server + 4 tools
 │       └── __main__.py
@@ -98,7 +108,33 @@ python -m pycal.mcp
 
 # 5) 一键启动脚本
 python run.py
+
+# 6) 云同步 CLI
+python -m pycal.sync --list                    # 列出账号
+python -m pycal.sync --add-google              # 交互式添加 (会打印应用专用密码步骤)
+python -m pycal.sync --add-icloud
+python -m pycal.sync --add-outlook
+python -m pycal.sync --add-custom <URL> <USER> <PASS> [NAME]
+python -m pycal.sync --test 1                  # 测试连接 + 列举日历
+python -m pycal.sync --sync 1                  # 同步单账号
+python -m pycal.sync --sync-all --policy newest_wins
+python -m pycal.sync --rm 1
 ```
+
+## 云同步说明 (CalDAV)
+
+| 项目 | 说明 |
+|---|---|
+| 协议 | CalDAV (RFC 4791) — Google / iCloud / Outlook / Nextcloud 都支持 |
+| 认证 | **应用专用密码**（不是主账号密码）。各服务商的申请链接在 UI 和 CLI 里都会打印 |
+| 冲突策略 | `newest_wins`（默认，按 LAST-MODIFIED 时间戳）/ `local_wins` / `remote_wins` |
+| 只读模式 | 勾选后该账号只做 PULL，绝不修改云端 |
+| 方向 | `both` / `pull`（只云→本地）/ `push`（只本地→云） |
+| 自动同步 | 主窗启动 10 秒后首跑，之后每 15 分钟一次；无账号时静默跳过 |
+| 凭据存储 | base64 + XOR 打乱落本地 DB。**这是防"随手打开 DB 看明文"，不是加密**。生产环境应换 Windows Credential Manager |
+| 私有扩展 | `X-PYCAL-COLOR` / `X-PYCAL-TYPE` / `X-PYCAL-COUNTDOWN` / `X-PYCAL-PRIORITY`，其他客户端会忽略 |
+
+**OAuth 尚未实现**：三家都需要 client_id/secret 申请流程，MVP 先走应用专用密码路线。
 
 ## 桌面集成（贴在桌面上）
 
@@ -134,8 +170,8 @@ PyCal 与 DesktopCal 共存时：
 | 1B: 农历副标题 | lunardate 后端 + 24 节气 + 节日（春节/端午/中秋 等） | ✅ |
 | 1C: 通知调度 | QSystemTrayIcon + 30s 轮询 + 左键切换显隐 + 右键菜单 + 提醒二次确认 | ✅ |
 | 1D: 壁纸叠加 | 读 Windows 注册表的当前壁纸 + QPainter 叠月历 + 一键还原 `restore_original_wallpaper` | ✅ |
-| **3: UX 细节** | **可拖动主窗 + 八向 resize + 4 种皮肤 + 月份切换 slide 动画 + 置顶切换 + 不透明度调节** | **✅ 本轮** |
-| 2: 同步 | Google / Outlook / iCloud CalDAV | ⏳ |
+| **3: UX 细节** | **可拖动主窗 + 八向 resize + 4 种皮肤 + 月份切换 slide 动画 + 置顶切换 + 不透明度调节** | **✅** |
+| **2: 云同步** | **CalDAV 双向同步 (Google / iCloud / Outlook / 通用) + 三方冲突解决 + 后台自动同步 + CLI + 管理 UI** | **✅ 本轮** |
 | 4: 发布 | PyInstaller 打包、MSIX、Linux .deb / AppImage | ⏳ |
 
 ## 已知限制
