@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+*.egg
+.eggs/
+*.log
+*.pid
+
+# 开发环境
+.env
+.venv/
+venv/
+.env.local
+.idea/
+.vscode/
+*.swp
+
+# PySide6 / Qt
+*.qm
+.qmake.stash
+
+# 临时文件 / 系统生成
+Thumbs.db
+.DS_Store
+*.tmp
+*.bak
+
+# PyCal 数据 (用户实际数据, 不入库)
+# 默认位置: %APPDATA%\PyCal\db\pycal.db
+*.db
+*.sqlite
+*.sqlite3
+
+# 壁纸生成的临时图 (太大不入库)
+pycal_wallpaper_*.png
+
+# 导入临时 cache
+pycal/cache/

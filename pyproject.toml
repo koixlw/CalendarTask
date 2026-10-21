@@ -1,0 +1,21 @@
+[project]
+name = "pycal"
+version = "0.1.0"
+description = "桌面日历复刻 — PySide6 + SQLite, 兼容 DesktopCal"
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.6",
+    "lunardate>=0.3",
+    "mcp>=2.0",
+]
+
+[project.scripts]
+pycal = "pycal.__main__:main"
+pycal-import = "tools.import_from_desktopcal:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["pycal*"]
