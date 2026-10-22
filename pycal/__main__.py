@@ -34,6 +34,16 @@ def main() -> int:
     p_report.add_argument("--html", action="store_true")
     p_report.add_argument("--out", metavar="PATH", help="输出路径 / 目录")
     p_report.add_argument("--open", action="store_true")
+    p_report.add_argument(
+        "--polish", action="store_true",
+        help="用 AI 润色报告 (需 ANTHROPIC_API_KEY)",
+    )
+    p_report.add_argument(
+        "--style", default="concise",
+        help="润色风格, 逗号分隔: concise,professional,friendly,analysis",
+    )
+    p_report.add_argument("--note", default="", help="给 AI 的补充说明")
+    p_report.add_argument("--model", default="claude-sonnet-5")
 
     p_sync = sub.add_parser("sync", help="CalDAV 云同步")
     p_sync.add_argument("action", nargs="?",
@@ -71,8 +81,31 @@ def main() -> int:
             render_daily_markdown, render_weekly_markdown, render_html,
         )
         d = _date.fromisoformat(args.day) if args.day else _date.today()
+        kind = "周报" if args.week else "日报"
         md = (render_weekly_markdown(d) if args.week
               else render_daily_markdown(d))
+
+        # AI 润色
+        if args.polish:
+            from pycal.report.ai_polish import (
+                ClaudePolishClient, PolishError, has_api_key, api_key_hint,
+            )
+            if not has_api_key():
+                print(api_key_hint(), file=_sys.stderr)
+                return 1
+            styles = [s.strip() for s in args.style.split(",") if s.strip()]
+            try:
+                r = ClaudePolishClient(args.model).polish(
+                    md, styles, kind, args.note)
+                md = r.text
+                print(f"[polished by {r.model}, ~${r.cost_estimate}]",
+                      file=_sys.stderr)
+            except PolishError as e:
+                print(f"✗ {e.message}", file=_sys.stderr)
+                if e.hint:
+                    print(f"  {e.hint}", file=_sys.stderr)
+                return 1
+
         content = (render_html(md, "PyCal Report") if args.html else md)
         if args.out:
             from pathlib import Path

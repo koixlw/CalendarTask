@@ -34,6 +34,7 @@ class ReportDialog(QDialog):
         self.resize(900, 720)
         self._mode = "daily"
         self._anchor = date.today()
+        self._ai_polished: Optional[str] = None
         self._build()
         self.refresh()
 
@@ -73,6 +74,17 @@ class ReportDialog(QDialog):
 
         self._btn_copy = QPushButton("📋 复制 MD")
         self._btn_copy.clicked.connect(self._copy)
+        self._btn_ai = QPushButton("✨ AI 润色")
+        self._btn_ai.setStyleSheet(
+            "QPushButton { background: #EBF5FB; color: #1B4F72;"
+            " border: 1px solid #85C1E9; font-weight: bold; }"
+            "QPushButton:hover { background: #D6EAF8; }"
+        )
+        self._btn_ai.setToolTip(
+            "用 Claude 把报告改写得更通顺 (可选风格: 简洁/专业/友好/复盘)"
+        )
+        self._btn_ai.clicked.connect(self._open_ai_polish)
+        top.addWidget(self._btn_ai)
         self._btn_save = QPushButton("💾 保存")
         self._btn_save.clicked.connect(self._save)
         self._btn_html = QPushButton("🌐 导出 HTML")
@@ -112,6 +124,7 @@ class ReportDialog(QDialog):
     # ------------------------------------------------------------------
     def _switch(self, mode: str) -> None:
         self._mode = mode
+        self._ai_polished = None      # 换模式 -> 丢弃旧的润色结果
         self._btn_daily.setChecked(mode == "daily")
         self._btn_weekly.setChecked(mode == "weekly")
         self.refresh()
@@ -121,22 +134,30 @@ class ReportDialog(QDialog):
             self._anchor = self._anchor + timedelta(days=delta)
         else:
             self._anchor = self._anchor + timedelta(days=7 * delta)
+        self._ai_polished = None      # 换日期 -> 旧的润色结果不再适用
         self.refresh()
 
     def _goto_today(self) -> None:
         self._anchor = date.today()
+        self._ai_polished = None
         self.refresh()
 
     def _on_date_pick(self) -> None:
         qd = self._date_edit.date()
         self._anchor = date(qd.year(), qd.month(), qd.day())
+        self._ai_polished = None
         self.refresh()
 
     # ------------------------------------------------------------------
     def _markdown(self) -> str:
+        """重新生成的原始报告 (忽略润色)。"""
         if self._mode == "daily":
             return render_daily_markdown(self._anchor)
         return render_weekly_markdown(self._anchor)
+
+    def _current_markdown(self) -> str:
+        """当前应当导出的内容 — 有润色版就用润色版。"""
+        return getattr(self, "_ai_polished", "") or self._markdown()
 
     def _title_for_file(self) -> str:
         if self._mode == "daily":
@@ -189,8 +210,27 @@ class ReportDialog(QDialog):
         self._status.setText(f"字数 {len(md)} · 渲染于 {date.today()}")
 
     # ------------------------------------------------------------------
+    def _open_ai_polish(self) -> None:
+        """打开 AI 润色对话框, 完成后把结果接管为本窗口当前内容。"""
+        from pycal.ui.ai_polish_dialog import PolishDialog
+        kind = "周报" if self._mode == "weekly" else "日报"
+        dlg = PolishDialog(self._markdown(), kind=kind, parent=self)
+        dlg.exec()
+        polished = dlg.polished_markdown()
+        if polished:
+            # 切到 HTML 预览显示润色版, 并标记为「已润色」
+            self._ai_polished = polished
+            from pycal.report import render_html
+            self._view.setHtml(
+                render_html(polished, f"AI 润色{kind}"))
+            self._status.setText(
+                "✨ 当前显示 AI 润色版 — "
+                "「复制 MD」/「保存」/「导出 HTML」会使用润色内容"
+            )
+            self._btn_ai.setText("✨ 重新润色")
+
     def _copy(self) -> None:
-        QApplication.clipboard().setText(self._markdown())
+        QApplication.clipboard().setText(self._current_markdown())
         QMessageBox.information(self, "已复制", "Markdown 已复制到剪贴板")
 
     def _save(self) -> None:
@@ -202,7 +242,7 @@ class ReportDialog(QDialog):
         if not path:
             return
         with open(path, "w", encoding="utf-8") as f:
-            f.write(self._markdown())
+            f.write(self._current_markdown())
         QMessageBox.information(self, "已保存", path)
 
     def _export_html(self) -> None:
@@ -214,7 +254,8 @@ class ReportDialog(QDialog):
         if not path:
             return
         with open(path, "w", encoding="utf-8") as f:
-            f.write(render_html(self._markdown(), f"PyCal {self._mode}"))
+            f.write(render_html(
+                self._current_markdown(), f"PyCal {self._mode}"))
         QMessageBox.information(self, "已导出", path)
 
     def _print(self) -> None:

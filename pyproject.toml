@@ -10,6 +10,7 @@ dependencies = [
     "caldav>=3.5",
     "icalendar>=7.0",
     "recurring-ical-events>=3.0",
+    "anthropic>=0.40",
 ]
 
 [project.scripts]
@@ -17,6 +18,7 @@ pycal = "pycal.__main__:main"
 pycal-import = "tools.import_from_desktopcal:main"
 pycal-sync = "pycal.sync.__main__:main"
 pycal-report = "pycal.report.__main__:main"
+pycal-polish = "pycal.report.ai_polish_cli:main"
 pycal-installer = "pycal.installer:main"
 
 [build-system]

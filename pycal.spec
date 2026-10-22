@@ -67,6 +67,9 @@ HIDDEN_IMPORTS = [
     # MCP
     "mcp", "mcp.server.fastmcp", "mcp.server.stdio",
 
+    # AI 润色 (Anthropic SDK)
+    "anthropic",
+
     # 农历
     "lunardate",
 ]

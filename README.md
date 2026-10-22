@@ -182,6 +182,73 @@ HTML 导出带内联 CSS + `@media print`，浏览器直接 Ctrl+P 就是 PDF。
 
 **修了一个真 bug**：完成标记正则在三个文件里都写成了 `\[+\]`（`+` 被当成量词，只匹配 `[]`），DesktopCal 的 Lua 是 `%[%+%]` = 字面 `[+]`。已统一改成 `\s*\[\s*\+\s*\]\s*`。
 
+## AI 润色 (Claude)
+
+用 Claude 把日报/周报改写得更通顺、更专业或更有洞察。
+
+### 配置
+
+```powershell
+# 当前会话
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
+
+# 永久（用户级）
+[Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", "sk-ant-...", "User")
+```
+
+Key 从 https://console.anthropic.com/settings/keys 获取。**只从环境变量读，不落盘、不写日志。**
+
+### 用法
+
+```bash
+# GUI: 报告窗口点 [✨ AI 润色]
+#      可选风格 + 填补充说明 + 原始/润色双 Tab 对比 + 流式显示
+
+# CLI — 报告命令加 --polish
+python -m pycal report --polish
+python -m pycal report --week --polish --style concise,analysis
+python -m pycal report --week --polish --note "评审延期是因为等设计稿"
+
+# 独立 CLI (更细的选项)
+python -m pycal.report.ai_polish_cli --check          # 测连通性
+python -m pycal.report.ai_polish_cli --week --stream  # 流式
+python -m pycal.report.ai_polish_cli --week --all-styles  # 4 种风格各出一版对比
+python -m pycal.report.ai_polish_cli --week --model claude-haiku-4-5  # 换模型
+```
+
+### 4 种风格（可多选叠加）
+
+| key | 名称 | 作用 |
+|---|---|---|
+| `concise` | 简洁精炼 | 压缩表述，删冗余词，保留数字 |
+| `professional` | 专业正式 | 商业书面语，总-分-总结构 |
+| `friendly` | 轻松友好 | 第一人称口语化，适合团队分享 |
+| `analysis` | 带复盘分析 | 增加「复盘」小节：分析完成率原因 + 可执行建议 |
+
+### 模型选择
+
+| 模型 | 用途 | 成本 (日报) |
+|---|---|---|
+| `claude-sonnet-5` | 默认，质量优先 | ~$0.035 |
+| `claude-haiku-4-5` | 最快最便宜 | ~$0.006 |
+| `claude-opus-5-5` | 深度复盘分析 | ~$0.18 |
+
+### 防编造设计
+
+System prompt 里写死了 5 条硬约束：
+
+1. **绝不编造事实** — 所有数字/日期/百分比/条目名/完成状态必须与原文一致
+2. **不改变事实语义** — 「完成率 60%」不能变成「完成率不错」
+3. **不添加原文没有的结论** — 数据不足就写「数据不足」
+4. **保留全部 Markdown 结构** — 标题层级、表格、`[ ]`/`[x]` 语法
+5. **保留所有条目** — 原文有的每一条都不能丢
+
+另外「补充说明」输入框让你手动补充 AI 不知道的上下文（比如"评审延期是因为等设计稿，不算拖延"）。
+
+### 错误处理
+
+SDK 异常分级映射到中文提示：429 速率限制 / 401 key 无效 / 403 权限不足 / 404 模型不存在 / 529 服务端繁忙 / 超时 / token 超限。
+
 ## 云同步说明 (CalDAV)
 
 | 项目 | 说明 |
