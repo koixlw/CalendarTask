@@ -12,8 +12,10 @@ Phase 3 增强:
 """
 
 from __future__ import annotations
+import os
 import sys
 from datetime import date
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import (
@@ -179,6 +181,7 @@ class PyCalMainWindow(FloatingWindow):
         self._btn_top = _tool_btn("📌")
         self._btn_refresh = _tool_btn("🔄")
         self._btn_sync = _tool_btn("☁")     # 云同步
+        self._btn_report = _tool_btn("📑")   # 日报/周报
         self._btn_search = _tool_btn("🔍")
         self._btn_notes = _tool_btn("📝")
         self._btn_wall = _tool_btn("🌄")
@@ -187,8 +190,9 @@ class PyCalMainWindow(FloatingWindow):
         self._btn_exit = _tool_btn("×", danger=True)
 
         for b in (self._btn_anim, self._btn_skin, self._btn_top, self._btn_refresh,
-                  self._btn_sync, self._btn_search, self._btn_notes,
-                  self._btn_wall, self._btn_import, self._btn_min, self._btn_exit):
+                  self._btn_sync, self._btn_report, self._btn_search,
+                  self._btn_notes, self._btn_wall, self._btn_import,
+                  self._btn_min, self._btn_exit):
             bar_layout.addWidget(b)
 
         self._top_layout.addWidget(bar)
@@ -226,6 +230,7 @@ class PyCalMainWindow(FloatingWindow):
         self._btn_today.clicked.connect(self.goto_today)
         self._btn_refresh.clicked.connect(self.refresh_view)
         self._btn_sync.clicked.connect(self._open_sync)
+        self._btn_report.clicked.connect(self._open_report)
         self._btn_search.clicked.connect(self._open_search)
         self._btn_import.clicked.connect(_import_dialog)
         self._btn_notes.clicked.connect(self._toggle_notes)
@@ -248,6 +253,7 @@ class PyCalMainWindow(FloatingWindow):
             (self._btn_skin, "切换皮肤"),
             (self._btn_top, "窗口置顶"),
             (self._btn_sync, "云同步 (Google / iCloud / Outlook)"),
+            (self._btn_report, "日报 / 周报生成"),
             (self._btn_min, "最小化到托盘"),
         ]:
             b.setToolTip(tip)
@@ -257,6 +263,12 @@ class PyCalMainWindow(FloatingWindow):
         self._sync_timer.timeout.connect(self._auto_sync_tick)
         self._sync_timer.start(15 * 60 * 1000)
         QTimer.singleShot(10_000, self._auto_sync_tick)   # 启动 10s 后首跑
+
+        # 报告自动生成: 每 30 分钟检查一次是否到点
+        self._report_timer = QTimer(self)
+        self._report_timer.timeout.connect(self._auto_report_tick)
+        self._report_timer.start(30 * 60 * 1000)
+        QTimer.singleShot(60_000, self._auto_report_tick)   # 启动 1min 后首检
 
     # ------------------------------------------------------------------
     # 月份切换 — 带动画
@@ -449,6 +461,52 @@ class PyCalMainWindow(FloatingWindow):
         dlg = SyncDialog(self)
         dlg.exec()
         self.refresh_view()      # 同步后刷新月视图
+
+    # ------------------------------------------------------------------
+    # 日报 / 周报
+    # ------------------------------------------------------------------
+    def _open_report(self) -> None:
+        from pycal.ui.report_dialog import ReportDialog
+        ReportDialog(self).exec()
+
+    def _auto_report_tick(self) -> None:
+        """到点自动生成日报 (18:00 后) / 周报 (周五 17:00 后), 每天最多一次。"""
+        if _load_setting("auto_report", "1") != "1":
+            return
+        try:
+            from datetime import datetime, timedelta
+            from pycal.report import (
+                render_daily_markdown, render_weekly_markdown,
+            )
+            now = datetime.now()
+            out_dir = Path(
+                _load_setting("report_dir", "")
+                or (Path(os.environ.get("APPDATA", "")) / "PyCal" / "reports")
+            )
+            out_dir.mkdir(parents=True, exist_ok=True)
+            today = now.date()
+
+            # 日报
+            daily_key = today.isoformat()
+            if now.hour >= 18 and \
+                    _load_setting("last_daily", "") != daily_key:
+                md = render_daily_markdown(today)
+                (out_dir / f"pycal_daily_{today:%Y%m%d}.md").write_text(
+                    md, encoding="utf-8")
+                _save_setting("last_daily", daily_key)
+                print(f"[report] 日报已生成: {out_dir}")
+
+            # 周报 (周五 17:00)
+            weekly_key = f"{today.isocalendar()[0]}W{today.isocalendar()[1]}"
+            if now.weekday() == 4 and now.hour >= 17 and \
+                    _load_setting("last_weekly", "") != weekly_key:
+                md = render_weekly_markdown(today)
+                (out_dir / f"pycal_weekly_{weekly_key}.md").write_text(
+                    md, encoding="utf-8")
+                _save_setting("last_weekly", weekly_key)
+                print(f"[report] 周报已生成: {out_dir}")
+        except Exception as e:
+            print(f"[report] 自动生成失败: {e}")
 
     def _auto_sync_tick(self) -> None:
         """后台自动同步 — 无账号时静默跳过, 失败不打扰用户。"""

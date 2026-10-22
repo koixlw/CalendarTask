@@ -16,6 +16,8 @@ dependencies = [
 pycal = "pycal.__main__:main"
 pycal-import = "tools.import_from_desktopcal:main"
 pycal-sync = "pycal.sync.__main__:main"
+pycal-report = "pycal.report.__main__:main"
+pycal-installer = "pycal.installer:main"
 
 [build-system]
 requires = ["setuptools>=68"]

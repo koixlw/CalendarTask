@@ -45,7 +45,7 @@ def _glyph_for_type(t: int) -> str:
 # ============================================================================
 # 行预览 (匹配 [+] 完成标记)
 # ============================================================================
-_LINE_RE = re.compile(r"^\s*(\[+\])\s*(.*)$")
+_LINE_RE = re.compile(r"^\s*\[\s*\+\s*\]\s*(.*)$")
 
 
 def _parse_lines(content: str) -> list[tuple[bool, str]]:
@@ -56,7 +56,7 @@ def _parse_lines(content: str) -> list[tuple[bool, str]]:
     for line in content.splitlines():
         m = _LINE_RE.match(line)
         if m:
-            out.append((True, m.group(2).strip()))
+            out.append((True, m.group(1).strip()))
         elif line.strip():
             out.append((False, line.strip()))
     return out

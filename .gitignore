@@ -40,3 +40,13 @@ pycal_wallpaper_*.png
 
 # 导入临时 cache
 pycal/cache/
+
+# 打包产物 (PyInstaller)
+build/
+dist/
+*.spec.bak
+
+# 生成的报告
+reports/
+pycal_report_*.md
+pycal_report_*.html

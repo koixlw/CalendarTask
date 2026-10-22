@@ -51,12 +51,17 @@ e:\todo\
 │   │   ├── skin.py                 ← 4 种皮肤 + 不透明度
 │   │   └── color_picker.py         ← 22 色调色板 + 自定义 BGR
 │   ├── desktop/
-│   │   └── wallpaper.py            ← 读取原壁纸 + 叠加月历 + SPI_SETDESKWALLPAPER
+│   │   ├── wallpaper.py            ← 读取原壁纸 + 叠加月历 + SPI_SETDESKWALLPAPER
+│   │   └── autostart.py            ← HKCU Run + WScript.Shell .lnk
 │   ├── notifier/
 │   │   └── __init__.py             ← QTimer 扫描 reminders + 接 TrayIcon
 │   ├── notes/
 │   │   └── __init__.py             ← 便签浮贴纸
 │   ├── lunar.py                    ← lunardate + 节气 + 节日 (Phase 1B)
+│   ├── report/
+│   │   ├── __init__.py             ← 日报/周报聚合 + Markdown/HTML 渲染
+│   │   └── __main__.py             ← CLI: --day/--week/--html/--auto-*
+│   ├── installer.py                ← 自启动 / 快捷方式 / 图标生成 / 卸载
 │   ├── sync/
 │   │   ├── presets.py              ← Google/iCloud/Outlook/通用 endpoint
 │   │   ├── accounts.py             ← 账号 CRUD + 凭据混淆 + sync_links
@@ -69,7 +74,15 @@ e:\todo\
 │       └── __main__.py
 │
 ├── tests/
-│   └── test_smoke.py
+│   ├── test_smoke.py               ← 基础 CRUD + 搜索
+│   ├── test_sync.py                ← 46 项 (iCal round-trip / 冲突检测)
+│   └── test_report.py              ← 36 项 (日报/周报/HTML)
+│
+├── assets/
+│   └── pycal.ico                   ← 7 尺寸应用图标 (运行时生成)
+│
+├── pycal.spec                      ← PyInstaller 配置
+├── build.py                        ← 一键打包脚本
 │
 └── tools/
     └── import_from_desktopcal.py   ← CLI 导入器
@@ -91,35 +104,83 @@ python -m pycal gui
 
 # 2) 从 DesktopCal 导入数据到 PyCal
 python -m pycal import
-# 等价: python -m tools.import_from_desktopcal
-# 自定义源/目标:
-python -m tools.import_from_desktopcal --source "X:\path\calendar.db" --target "X:\path\pycal.db"
 
-# 3) 命令行搜索 (PyCal 数据)
+# 3) 命令行搜索
 python -m pycal search "周报"
 
-# 4) 启动 MCP server (stdio)
-python -m pycal.mcp
-# 客户端配置示例 (Claude Desktop):
-#   "pycal": {
-#     "command": "python",
-#     "args": ["-m", "pycal.mcp"]
-#   }
+# 4) 日报 / 周报
+python -m pycal report                    # 今天日报 (stdout)
+python -m pycal report --week             # 本周周报
+python -m pycal report --day 2026-10-21 --html --out D:/reports
+# 完整 CLI:
+python -m pycal.report --yesterday --html --open
+python -m pycal.report --last-week --out D:/reports
+python -m pycal.report --auto-daily       # 常驻, 每天 18:00 生成
+python -m pycal.report --auto-weekly      # 常驻, 每周五 17:00 生成
 
-# 5) 一键启动脚本
-python run.py
-
-# 6) 云同步 CLI
-python -m pycal.sync --list                    # 列出账号
-python -m pycal.sync --add-google              # 交互式添加 (会打印应用专用密码步骤)
-python -m pycal.sync --add-icloud
-python -m pycal.sync --add-outlook
-python -m pycal.sync --add-custom <URL> <USER> <PASS> [NAME]
-python -m pycal.sync --test 1                  # 测试连接 + 列举日历
-python -m pycal.sync --sync 1                  # 同步单账号
+# 5) 云同步 CLI
+python -m pycal sync list
+python -m pycal.sync --list
+python -m pycal.sync --add-google              # 交互式 (打印应用专用密码步骤)
+python -m pycal.sync --test 1
 python -m pycal.sync --sync-all --policy newest_wins
-python -m pycal.sync --rm 1
+
+# 6) 安装 / 卸载
+python -m pycal install                       # 状态查询
+python -m pycal install autostart-on          # 开机自启动 (HKCU Run)
+python -m pycal install autostart-off
+python -m pycal install shortcut              # 桌面快捷方式
+python -m pycal install uninstall             # 卸载 (保留数据)
+# 完整 CLI:
+python -m pycal.installer --status
+python -m pycal.installer --autostart on
+python -m pycal.installer --shortcut create
+python -m pycal.installer --uninstall --purge   # 连数据一起删
+
+# 7) 启动 MCP server (stdio)
+python -m pycal.mcp
+
+# 8) 打包成 exe
+python build.py                # onedir → dist/PyCal/PyCal.exe (155MB)
+python build.py --onefile      # 单文件 exe
+python build.py --install      # 打包 + 自动装自启动/快捷方式
+python build.py --icon-only    # 只生成 assets/pycal.ico
 ```
+
+## 打包发布
+
+```bash
+pip install pyinstaller
+python build.py            # → dist/PyCal/PyCal.exe + dist/PyCal/_internal/
+python build.py --install  # 顺便写 HKCU Run 自启动 + 桌面快捷方式
+```
+
+| 项 | 说明 |
+|---|---|
+| 模式 | onedir (启动 ~0.3s) / `--onefile` 单文件 (启动 ~2s, 155MB) |
+| 图标 | `assets/pycal.ico` — 7 尺寸 (16→256) PNG-compressed 32bpp，运行时用 PySide6 现生成 |
+| 自启动 | HKCU `Run` 键（不需要管理员权限，不触发 UAC）|
+| 卸载 | `python -m pycal install uninstall` 移除自启+快捷方式；加 `--purge` 连数据目录 |
+| 体积优化 | `pycal.spec` 里 EXCLUDES 排掉 QtWebEngine/QtQuick/科学计算等，450MB → 155MB |
+
+## 日报 / 周报
+
+数据来自 `calendar_items`，自动按 `[+]` 完成标记统计行级完成率。
+
+**日报**：日期+农历+星期 → 概览表（条目数/总行/完成/未完成/完成率进度条）→ 按类型分组（格子/重复/提醒/倒数日）→ 30 天内倒数日
+
+**周报**：ISO 周编号 → 本周总览 → 每日完成矩阵（含完成率条 + 🟢/🟡/🔴 评级）→ 类型分布 → 高频关键词（TF 提取）→ 逐日明细 → 下周预告 → 倒数日
+
+| 入口 | 位置 |
+|---|---|
+| GUI | 工具栏 📑 → 预览/复制/保存 MD/导出 HTML/打印 PDF |
+| 自动 | 主窗每 30 分钟检查：日报每天 18:00 后生成一次、周报每周五 17:00 后生成一次 → `%APPDATA%\PyCal\reports\` |
+| CLI | `python -m pycal report [--day D] [--week] [--html] [--out PATH] [--open]` |
+| 常驻 | `python -m pycal.report --auto-daily` / `--auto-weekly` |
+
+HTML 导出带内联 CSS + `@media print`，浏览器直接 Ctrl+P 就是 PDF。
+
+**修了一个真 bug**：完成标记正则在三个文件里都写成了 `\[+\]`（`+` 被当成量词，只匹配 `[]`），DesktopCal 的 Lua 是 `%[%+%]` = 字面 `[+]`。已统一改成 `\s*\[\s*\+\s*\]\s*`。
 
 ## 云同步说明 (CalDAV)
 
@@ -171,8 +232,9 @@ PyCal 与 DesktopCal 共存时：
 | 1C: 通知调度 | QSystemTrayIcon + 30s 轮询 + 左键切换显隐 + 右键菜单 + 提醒二次确认 | ✅ |
 | 1D: 壁纸叠加 | 读 Windows 注册表的当前壁纸 + QPainter 叠月历 + 一键还原 `restore_original_wallpaper` | ✅ |
 | **3: UX 细节** | **可拖动主窗 + 八向 resize + 4 种皮肤 + 月份切换 slide 动画 + 置顶切换 + 不透明度调节** | **✅** |
-| **2: 云同步** | **CalDAV 双向同步 (Google / iCloud / Outlook / 通用) + 三方冲突解决 + 后台自动同步 + CLI + 管理 UI** | **✅ 本轮** |
-| 4: 发布 | PyInstaller 打包、MSIX、Linux .deb / AppImage | ⏳ |
+| **2: 云同步** | **CalDAV 双向同步 (Google / iCloud / Outlook / 通用) + 三方冲突解决 + 后台自动同步 + CLI + 管理 UI** | ✅ |
+| **日报/周报** | **从 calendar_items 聚合生成 Markdown/HTML，含完成率、每日矩阵、类型分布、关键词、倒数日；GUI 预览 + CLI + 定时自动生成** | **✅ 本轮** |
+| **4: 发布** | **PyInstaller 打包 (155MB onedir) + 多尺寸 .ico 图标 + HKCU Run 自启动 + 桌面快捷方式 + 卸载器** | **✅ 本轮** |
 
 ## 已知限制
 

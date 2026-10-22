@@ -240,7 +240,7 @@ class ColorMatcher:
 # ============================================================================
 # 4. 行级判定 — 对应 history_search.lua:207-217, 335-360
 # ============================================================================
-_COMPLETED_PREFIX_RE = re.compile(r"^\s*\[+\]")
+_COMPLETED_PREFIX_RE = re.compile(r"^\s*\[\s*\+\s*\]")
 
 
 def line_is_completed(line: str) -> bool:
