@@ -38,6 +38,27 @@ def test_imports() -> None:
     print("[OK] imports")
 
 
+def _cleanup(con, path: str) -> None:
+    """Windows 下 SQLite WAL 会锁文件, 先关连接再删。"""
+    try:
+        con.close()
+    except Exception:
+        pass
+    import gc, time
+    gc.collect()
+    for _ in range(3):
+        try:
+            os.unlink(path)
+            return
+        except PermissionError:
+            time.sleep(0.1)
+    for suffix in ("-wal", "-shm"):
+        try:
+            os.unlink(path + suffix)
+        except OSError:
+            pass
+
+
 def test_db_init() -> None:
     """临时内存 DB 走一遍 schema。"""
     from pycal.db.connection import _make_conn
@@ -45,6 +66,7 @@ def test_db_init() -> None:
     from pycal.db.models import CalendarItem
 
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    con = None
     try:
         con = _make_conn(tmp)
         item = CalendarItem(
@@ -57,7 +79,7 @@ def test_db_init() -> None:
         assert rows and rows[0].title == "测试任务"
         print(f"[OK] db_init ({len(rows)} row)")
     finally:
-        os.unlink(tmp)
+        _cleanup(con, tmp)
 
 
 def test_search() -> None:
@@ -119,7 +141,7 @@ def test_search() -> None:
 
         print("[OK] search")
     finally:
-        os.unlink(tmp)
+        _cleanup(con, tmp)
 
 
 def test_reminders() -> None:
@@ -139,7 +161,7 @@ def test_reminders() -> None:
         assert due and due[0][1] == "rem-1"
         print(f"[OK] reminders ({len(due)} due)")
     finally:
-        os.unlink(tmp)
+        _cleanup(con, tmp)
 
 
 def test_importer_safe() -> None:

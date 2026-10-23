@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 
 from pycal.db.connection import open_default
 from pycal.db.repository import get_item
-from pycal.search.engine import SearchEngine, SearchOptions, SearchHit
+from pycal.search import SearchEngine, SearchOptions, SearchHit
 from pycal.ui.color_picker import ColorPickerButton, PALETTE
 
 

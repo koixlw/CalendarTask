@@ -17,7 +17,7 @@ from typing import Any
 
 from pycal.db.connection import open_default
 from pycal.db.repository import list_items_by_date, upsert_item
-from pycal.search.engine import SearchEngine, SearchOptions
+from pycal.search import SearchEngine, SearchOptions
 from pycal.db.models import CalendarItem
 
 

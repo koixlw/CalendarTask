@@ -134,7 +134,7 @@ class ItemEditorDialog(QDialog):
         root.addWidget(self._type_stack)
 
         # 内容 (多行)
-        root.addWidget(QLabel("内容 (每行一条; [+] 开头表示已完成):"))
+        root.addWidget(QLabel("内容 (一行一条, 不用写勾):"))
         self._content_edit = QTextEdit()
         self._content_edit.setMinimumHeight(140)
         mono = QFont("Consolas")
@@ -168,8 +168,8 @@ class ItemEditorDialog(QDialog):
     def _build_grid_panel(self) -> QWidget:
         w = QWidget()
         form = QFormLayout(w)
-        note = QLabel("格子模式: 多行内容, [+] 开头代表已完成。\n"
-                      "可在月视图里逐行勾选完成。")
+        note = QLabel("格子模式: 内容一行一条, 换行即可。\n"
+                      "不用手写 [+] —— 在月视图里点左边的 ☐ 就能打勾。")
         note.setStyleSheet("color: #666; font-size: 9pt;")
         form.addRow(note)
         return w

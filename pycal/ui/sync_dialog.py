@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit,
     QComboBox, QPushButton, QCheckBox, QLabel, QListWidget,
     QListWidgetItem, QSplitter, QTextEdit, QMessageBox, QGroupBox,
-    QDialogButtonBox, QProgressBar,
+    QDialogButtonBox, QProgressBar, QWidget,
 )
 
 from pycal.sync.presets import PRESETS, get_preset

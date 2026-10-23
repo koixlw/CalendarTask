@@ -22,7 +22,9 @@ from PySide6.QtCore import (
     Qt, QPoint, Signal, QSize, QPropertyAnimation, QEasingCurve,
     QParallelAnimationGroup, QAbstractAnimation, QRect, QTimer,
 )
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPixmap, QPainter
+from PySide6.QtGui import (
+    QAction, QColor, QFont, QIcon, QPixmap, QPainter, QShortcut, QKeySequence,
+)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QGridLayout, QLabel,
     QVBoxLayout, QHBoxLayout, QPushButton, QFrame, QStatusBar,
@@ -164,36 +166,54 @@ class PyCalMainWindow(FloatingWindow):
         bar_layout.addWidget(title)
         bar_layout.addSpacing(20)
 
-        self._btn_prev = _tool_btn("◀")
+        self._btn_prev = _tool_btn("◀", self._skin)
         self._month_label = QLabel()
         self._month_label.setProperty("role", "month_label")
         self._month_label.setMinimumWidth(140)
         self._month_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._btn_next = _tool_btn("▶")
-        self._btn_today = _tool_btn("今天")
+        self._btn_next = _tool_btn("▶", self._skin)
+        self._btn_today = _tool_btn("今天", self._skin)
         for b in (self._btn_prev, self._month_label, self._btn_next, self._btn_today):
             bar_layout.addWidget(b)
         bar_layout.addSpacing(8)
 
         bar_layout.addStretch()
-        self._btn_anim = _tool_btn("🎬")  # 月份切换动画开关
-        self._btn_skin = _tool_btn("🎨")
-        self._btn_top = _tool_btn("📌")
-        self._btn_refresh = _tool_btn("🔄")
-        self._btn_sync = _tool_btn("☁")     # 云同步
-        self._btn_report = _tool_btn("📑")   # 日报/周报
-        self._btn_search = _tool_btn("🔍")
-        self._btn_notes = _tool_btn("📝")
-        self._btn_wall = _tool_btn("🌄")
-        self._btn_import = _tool_btn("📥")
-        self._btn_min = _tool_btn("—")
-        self._btn_exit = _tool_btn("×", danger=True)
+        # ── 右区 ──
+        # 常用功能直接写中文名; 低频功能收进「⋯ 更多」菜单 (菜单项也带文字 +
+        # 一句话说明)。之前 12 个纯 emoji 图标谁也认不出来。
+        self._btn_report = _tool_btn("📑 日报", self._skin, accent=True)
+        self._btn_ai = _tool_btn("✨ AI 日报", self._skin, accent=True)
+        self._btn_search = _tool_btn("🔍 搜索", self._skin)
+        self._btn_more = _tool_btn("⋯ 更多", self._skin)
+        self._btn_help = _tool_btn("？ 帮助", self._skin)
+        bar_layout.addSpacing(10)
+        # 窗口控制 — 文案写清楚点了会发生什么, 而不是光一个「—」
+        self._btn_min = _tool_btn("— 收起", self._skin)
+        self._btn_max = _tool_btn("□ 最大化", self._skin)
+        self._btn_exit = _tool_btn("× 退出", self._skin, danger=True)
 
-        for b in (self._btn_anim, self._btn_skin, self._btn_top, self._btn_refresh,
-                  self._btn_sync, self._btn_report, self._btn_search,
-                  self._btn_notes, self._btn_wall, self._btn_import,
-                  self._btn_min, self._btn_exit):
+        # (按钮, 是否 accent, 是否 danger) — 换皮肤时照这张表重刷
+        self._tool_meta = {
+            self._btn_prev: (False, False), self._btn_next: (False, False),
+            self._btn_today: (False, False),
+            self._btn_report: (True, False), self._btn_ai: (True, False),
+            self._btn_search: (False, False), self._btn_more: (False, False),
+            self._btn_help: (False, False),
+            self._btn_min: (False, False), self._btn_max: (False, False),
+            self._btn_exit: (False, True),
+        }
+        # ⚠ 只把「右区」这些加进布局。_tool_meta 里还包含 prev/next/today,
+        #   它们上面已经 addWidget 过了 —— 对已入布局的 widget 再 addWidget,
+        #   Qt 会把它**移走**重新插到末尾, 月份导航会莫名其妙跑到工具栏右边。
+        for b in (self._btn_report, self._btn_ai, self._btn_search,
+                  self._btn_more, self._btn_help,
+                  self._btn_min, self._btn_max, self._btn_exit):
             bar_layout.addWidget(b)
+
+        # 「⋯ 更多」的下拉菜单
+        self._btn_more.setMenu(self._build_more_menu())
+        self._btn_more.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup)
 
         self._top_layout.addWidget(bar)
         # 把整个工具栏作为拖动区域
@@ -202,8 +222,8 @@ class PyCalMainWindow(FloatingWindow):
         # 月视图 (放在一个 QStackedWidget 里方便做切换动画)
         from PySide6.QtWidgets import QStackedWidget
         self._stack = QStackedWidget()
-        self._month_left = MonthView()
-        self._month_right = MonthView()
+        self._month_left = MonthView(skin_name=self._skin.name)
+        self._month_right = MonthView(skin_name=self._skin.name)
         # 两层用于 slide-in / slide-out
         self._stack.addWidget(self._month_left)
         self._stack.addWidget(self._month_right)
@@ -211,6 +231,9 @@ class PyCalMainWindow(FloatingWindow):
         # 当前月份初始设定相同
         self._active_month_view = self._month_left
         self._idle_month_view = self._month_right
+        # 勾选/增删后刷新状态栏计数
+        for mv in (self._month_left, self._month_right):
+            mv.sig_data_changed.connect(self._update_count)
         self._top_layout.addWidget(self._stack, 1)
 
         # 状态栏
@@ -218,6 +241,8 @@ class PyCalMainWindow(FloatingWindow):
         self._count_label = QLabel("0 项")
         self._opacity_label = QLabel("100%")
         self._anim_label = QLabel("动画 开")
+        self._hint_label = QLabel("单击 ☐ 打勾 · 双击文字编辑 · 右键更多")
+        status.addWidget(self._hint_label, 1)
         status.addPermanentWidget(self._count_label)
         status.addPermanentWidget(self._anim_label)
         status.addPermanentWidget(self._opacity_label)
@@ -228,17 +253,15 @@ class PyCalMainWindow(FloatingWindow):
         self._btn_prev.clicked.connect(lambda: self.shift_month(-1))
         self._btn_next.clicked.connect(lambda: self.shift_month(+1))
         self._btn_today.clicked.connect(self.goto_today)
-        self._btn_refresh.clicked.connect(self.refresh_view)
-        self._btn_sync.clicked.connect(self._open_sync)
         self._btn_report.clicked.connect(self._open_report)
+        self._btn_ai.clicked.connect(self._open_ai)
         self._btn_search.clicked.connect(self._open_search)
-        self._btn_import.clicked.connect(_import_dialog)
-        self._btn_notes.clicked.connect(self._toggle_notes)
-        self._btn_wall.clicked.connect(lambda: _set_wallpaper(self))
-        self._btn_skin.clicked.connect(self._show_skin_menu)
-        self._btn_anim.clicked.connect(self._toggle_animation)
-        self._btn_top.clicked.connect(self._toggle_topmost)
-        self._btn_min.clicked.connect(self.hide)
+        self._btn_help.clicked.connect(self._open_help)
+        # 注意 clicked 会带一个 bool 参数, 直接 connect(self._collapse) 会让它
+        # 当成 announce 收到 False。这里显式写清楚: 主动点「收起」就安静收,
+        # 只有 Alt+F4 这种"意图不明"的关窗才弹气泡。
+        self._btn_min.clicked.connect(lambda: self._collapse(announce=False))
+        self._btn_max.clicked.connect(self.toggle_maximized)
         self._btn_exit.clicked.connect(self._quit_app)
 
         # 初始化
@@ -246,17 +269,38 @@ class PyCalMainWindow(FloatingWindow):
         self._update_count()
         self._apply_topmost()
         self._apply_opacity()
+        # 动画开关的初始状态 — 状态栏文案也要跟着设置走, 别写死「开」
+        anim_on = _load_setting("anim", "1") == "1"
+        self._anim_label.setText(f"动画 {'开' if anim_on else '关'}")
 
-        # 提示
+        # 提示 — 每个按钮都有, 别再靠猜
         for b, tip in [
-            (self._btn_anim, "月份切换动画 (开 / 关)"),
-            (self._btn_skin, "切换皮肤"),
-            (self._btn_top, "窗口置顶"),
-            (self._btn_sync, "云同步 (Google / iCloud / Outlook)"),
-            (self._btn_report, "日报 / 周报生成"),
-            (self._btn_min, "最小化到托盘"),
+            (self._btn_prev, "上一月"),
+            (self._btn_next, "下一月"),
+            (self._btn_today, "回到今天"),
+            (self._btn_report, "生成日报 / 周报\n预览、复制、导出 MD / HTML / PDF"),
+            (self._btn_ai, "用 Claude 把日报 / 周报改写得更通顺\n(需要 ANTHROPIC_API_KEY)"),
+            (self._btn_search, "搜索全部条目\n快捷键 Ctrl+F"),
+            (self._btn_more, "全部功能菜单\n云同步 / 便签 / 导入 / 外观 / 壁纸 …"),
+            (self._btn_help, "快捷键与功能说明\n快捷键 F1"),
+            (self._btn_min, "收起窗口到托盘\n程序继续在后台运行, 提醒照常弹出\n(想彻底退出请点「× 退出」)"),
+            (self._btn_max, "最大化 / 还原窗口\n也可双击工具栏空白处"),
+            (self._btn_exit, "彻底退出 PyCal\n后台提醒和自动同步都会停止"),
         ]:
             b.setToolTip(tip)
+
+        # 快捷键
+        for key, slot in [
+            ("Ctrl+R", self._open_report),
+            ("Ctrl+Shift+R", self._open_ai),
+            ("Ctrl+F", self._open_search),
+            ("Ctrl+T", self.goto_today),
+            ("Ctrl+N", self._new_item_today),
+            ("F5", self.refresh_view),
+            ("F1", self._open_help),
+            ("Ctrl+S", self._open_sync),
+        ]:
+            QShortcut(QKeySequence(key), self, activated=slot)
 
         # 云同步: 后台定时任务 (每 15 分钟, 仅当有账号)
         self._sync_timer = QTimer(self)
@@ -378,41 +422,137 @@ class PyCalMainWindow(FloatingWindow):
                 f"QStatusBar {{ color: {self._skin.status_fg}; }}"
                 f"QStatusBar > QLabel {{ color: {self._skin.status_fg}; }}"
             )
+        # 月视图的格子配色是内联样式, 不会跟着主窗 QSS 走 — 得手动推
+        for mv in (getattr(self, "_month_left", None),
+                   getattr(self, "_month_right", None)):
+            if mv is not None:
+                mv.apply_skin(self._skin.name)
+        # 工具栏按钮同理 — 各自有内联 QSS, 换皮肤得逐个重刷
+        for btn, (accent, danger) in getattr(self, "_tool_meta", {}).items():
+            btn.setStyleSheet(_tool_qss(self._skin, accent=accent, danger=danger))
 
-    def _show_skin_menu(self) -> None:
+    # ------------------------------------------------------------------
+    # 「⋯ 更多」菜单 — 低频功能全在这儿, 每项都带中文名 + 一句话说明
+    # ------------------------------------------------------------------
+    def _build_more_menu(self) -> QMenu:
         menu = QMenu(self)
-        for name, skin in SKINS.items():
-            label = {
-                "light_default": "浅色 — 默认",
-                "warm_paper": "暖色 — 米黄",
-                "dark_mode": "深色 — 夜间",
-                "glass_blur": "玻璃 — 磨砂",
-            }[name]
-            act = menu.addAction(label)
+        menu.setToolTipsVisible(True)
+
+        def section(title: str) -> None:
+            # 不用 addSection() —— Windows 原生菜单样式下分组标题不显示,
+            # 改用「禁用的 action」当标题, 各平台都稳。
+            head = menu.addAction(title)
+            head.setEnabled(False)
+
+        def item(text: str, desc: str, slot, shortcut: str = "") -> QAction:
+            act = menu.addAction(text)
+            act.setToolTip(desc)
+            if shortcut:
+                act.setShortcut(shortcut)
+            act.triggered.connect(slot)
+            return act
+
+        section("常用")
+        item("搜索全部条目…", "在所有日期的所有条目里找关键词",
+             self._open_search, "Ctrl+F")
+        item("生成日报 / 周报…", "预览、复制, 或导出成 MD / HTML / PDF",
+             self._open_report, "Ctrl+R")
+        item("用 AI 润色日报…", "调用 Claude 把日报改写得更通顺 "
+                              "(需配置 ANTHROPIC_API_KEY)",
+             self._open_ai, "Ctrl+Shift+R")
+
+        section("数据")
+        item("云同步 (CalDAV)…",
+             "连接 Google / iCloud / Outlook, 双向同步日程", self._open_sync)
+        item("便签…", "开一个随手记的小便签窗口", self._toggle_notes)
+        item("从 DesktopCal 导入…", "把 DesktopCal 里的历史条目搬过来",
+             lambda: _import_dialog())
+        item("重新拉取数据", "从数据库刷新本月显示 (F5)", self.refresh_view)
+
+        section("外观")
+        menu.addMenu(self._build_skin_menu())
+        top_act = item("窗口置顶", "让 PyCal 始终浮在其它窗口之上",
+                       self._toggle_topmost)
+        top_act.setCheckable(True)
+        top_act.setChecked(self._topmost)
+        anim_act = item("月份切换动画", "翻月时左右滑动, 可以关掉",
+                        self._toggle_animation)
+        anim_act.setCheckable(True)
+        anim_act.setChecked(_load_setting("anim", "1") == "1")
+        item("生成月历壁纸…", "把当月月视图导成图片并设为桌面壁纸",
+             lambda: _set_wallpaper(self))
+
+        section("帮助")
+        item("快捷键与功能说明…", "所有功能和快捷键一览", self._open_help, "F1")
+        item("关于 PyCal", "版本信息与数据存放位置", self._show_about)
+
+        section("窗口")
+        close_menu = menu.addMenu("关闭窗口时")
+        for label, value, tip in [
+            ("收起到托盘 (后台继续运行)", "tray",
+             "关窗后程序留在后台, 提醒和自动同步照常"),
+            ("直接退出程序", "exit", "关窗即结束程序"),
+        ]:
+            act = close_menu.addAction(label)
+            act.setToolTip(tip)
+            act.setCheckable(True)
+            act.setChecked(_load_setting("close_behavior", "tray") == value)
+            act.triggered.connect(
+                lambda _=False, v=value: _save_setting("close_behavior", v)
+            )
+        item("收起窗口到托盘", "窗口藏起来, 程序继续在后台运行", self._collapse)
+        item("彻底退出 PyCal", "结束程序, 停止后台提醒和同步", self._quit_app)
+        return menu
+
+    def _build_skin_menu(self) -> QMenu:
+        """皮肤 + 不透明度 — 作为子菜单塞进「更多」里。"""
+        skin_menu = QMenu("皮肤 / 不透明度", self)
+        for name, label in [
+            ("light_default", "浅色 — 默认"),
+            ("warm_paper", "暖色 — 米黄"),
+            ("dark_mode", "深色 — 夜间"),
+            ("glass_blur", "玻璃 — 磨砂"),
+        ]:
+            act = skin_menu.addAction(label)
             act.setCheckable(True)
             act.setChecked(self._skin.name == name)
-            act.triggered.connect(
-                lambda _=False, n=name: self._set_skin(n)
-            )
-        # 不透明度滑块
-        menu.addSeparator()
-        op_menu = menu.addMenu("不透明度")
+            act.triggered.connect(lambda _=False, n=name: self._set_skin(n))
+        skin_menu.addSeparator()
+        op_menu = skin_menu.addMenu("不透明度")
         for pct in (60, 75, 90, 100):
             act = op_menu.addAction(f"{pct}%")
             act.setCheckable(True)
-            act.setChecked(
-                abs(self._opacity * 100 - pct) < 1
-            )
+            act.setChecked(abs(self._opacity * 100 - pct) < 1)
             act.triggered.connect(
                 lambda _=False, p=pct: self._set_opacity(p / 100)
             )
-        menu.exec(self.mapToGlobal(QPoint(self._btn_skin.x(),
-                                          self._btn_skin.y() + self._btn_skin.height())))
+        return skin_menu
+
+    def _open_help(self) -> None:
+        from pycal.ui.help_dialog import HelpDialog
+        HelpDialog(self).exec()
+
+    def _show_about(self) -> None:
+        try:
+            from pycal import __version__
+        except Exception:
+            __version__ = "?"
+        db = _db_location()
+        QMessageBox.about(
+            self, "关于 PyCal",
+            f"<b>PyCal {__version__}</b><br><br>"
+            "桌面月历本 — 记事 / 提醒 / 倒数日 / 日报周报 / CalDAV 同步<br><br>"
+            f"数据文件:<br><code>{db}</code><br><br>"
+            "快捷键: <b>F1</b> 查看完整说明",
+        )
 
     def _set_skin(self, name: str) -> None:
         self._skin = current_skin(name)
         _save_setting("skin", name)
         self._apply_skin()
+        # 「更多」菜单里的皮肤勾选态跟着变
+        if getattr(self, "_btn_more", None) is not None:
+            self._btn_more.setMenu(self._build_more_menu())
 
     def _set_opacity(self, p: float) -> None:
         self._opacity = p
@@ -428,6 +568,7 @@ class PyCalMainWindow(FloatingWindow):
         new = "0" if cur == "1" else "1"
         _save_setting("anim", new)
         self._anim_label.setText(f"动画 {'开' if new == '1' else '关'}")
+        self._refresh_more_menu()
 
     def _toggle_topmost(self) -> None:
         self._topmost = not self._topmost
@@ -442,13 +583,10 @@ class PyCalMainWindow(FloatingWindow):
         else:
             flags |= Qt.WindowType.WindowStaysOnBottomHint
             flags &= ~Qt.WindowType.WindowStaysOnTopHint
+        was_visible = self.isVisible()
         self.setWindowFlags(flags)
-        self.show()  # 重新设置 flags 后需要 show()
-        self._btn_top.setStyleSheet(
-            "QToolButton { background: #FFF8B0; border: 2px solid #EFA020; }"
-            if self._topmost else
-            "QToolButton { background: white; }"
-        )
+        if was_visible:
+            self.show()  # 重新设置 flags 后需要 show()
 
     def _open_search(self) -> None:
         _search_dialog(self)
@@ -465,9 +603,29 @@ class PyCalMainWindow(FloatingWindow):
     # ------------------------------------------------------------------
     # 日报 / 周报
     # ------------------------------------------------------------------
-    def _open_report(self) -> None:
+    def _open_report(self, start_ai: bool = False) -> None:
         from pycal.ui.report_dialog import ReportDialog
-        ReportDialog(self).exec()
+        ReportDialog(self, start_ai=start_ai).exec()
+
+    def _open_ai(self) -> None:
+        """AI 润色日报 — 没配 key 就直接给配置指引, 而不是开一个灰按钮的窗。"""
+        from pycal.report.ai_polish import has_api_key, api_key_hint
+        if not has_api_key():
+            QMessageBox.information(
+                self, "AI 日报 — 还差一步",
+                "AI 润色需要一个 Anthropic API key。\n\n"
+                + api_key_hint()
+                + "\n\n设好之后重启 PyCal, 工具栏的「✨ AI 日报」就能用了。"
+                "\n不配也不影响其它功能 —— 日报/周报照常能生成。",
+            )
+            return
+        self._open_report(start_ai=True)
+
+    def _new_item_today(self) -> None:
+        """Ctrl+N — 在今天新建一条格子条目。"""
+        self._active_month_view.goto_today()
+        self._update_month_label()
+        self._active_month_view.sig_new_item.emit(date.today().isoformat(), 0)
 
     def _auto_report_tick(self) -> None:
         """到点自动生成日报 (18:00 后) / 周报 (周五 17:00 后), 每天最多一次。"""
@@ -534,17 +692,92 @@ class PyCalMainWindow(FloatingWindow):
         self._notes_mgr.create()
 
     def _quit_app(self) -> None:
-        if hasattr(self, "_tray") and self._tray is not None:
+        if getattr(self, "_tray", None) is not None:
             self._tray.hide()
+        self.hide()          # 立刻收掉窗口, 别让它比进程多活一会儿
         self._app.quit()
 
+    def _refresh_more_menu(self) -> None:
+        """「更多」菜单里的勾选态 (置顶/动画/关窗行为) 改完要重建菜单。"""
+        btn = getattr(self, "_btn_more", None)
+        if btn is not None:
+            btn.setMenu(self._build_more_menu())
+
     # ------------------------------------------------------------------
-    # 关闭: 隐藏到托盘
+    # 收起 / 关闭
+    #
+    # 之前 Alt+F4 / 任务栏 ✕ 会无声无息地把窗口藏起来, 用户以为程序死了,
+    # 也不知道怎么真正退出。现在第一次关窗先问清楚, 之后按选择静默执行,
+    # 并弹一次托盘气泡告诉用户「还在后台 + 怎么唤回」。
     # ------------------------------------------------------------------
+    def _has_tray(self) -> bool:
+        return getattr(self, "_tray", None) is not None
+
+    def _collapse(self, announce: bool = True) -> None:
+        """收起窗口 — 程序继续在后台跑, 提醒和自动同步不受影响。"""
+        self.hide()
+        if announce and self._has_tray():
+            self._tray.showMessage(
+                "PyCal 已收起到后台",
+                "提醒和自动同步仍在运行。\n"
+                "双击右下角托盘图标可以重新打开, 点托盘图标右键菜单的"
+                "「退出 PyCal」可彻底结束。",
+                QSystemTrayIcon.MessageIcon.Information,
+                4000,
+            )
+
+    def _ask_close_behavior(self) -> None:
+        """第一次关窗 — 让用户选「收起到托盘」还是「直接退出」。"""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("关闭 PyCal")
+        box.setText("要现在关闭 PyCal 吗?")
+        box.setInformativeText(
+            "<b>收起到托盘</b><br>"
+            "窗口藏到右下角托盘，程序继续在后台运行，"
+            "提醒和自动同步照常工作。<br>"
+            "随时双击托盘图标可以重新打开。<br><br>"
+            "<b>直接退出</b><br>"
+            "彻底结束程序，后台的提醒和自动同步都会停止。<br><br>"
+            "这个选择会记住，以后关窗不再打扰。"
+            "随时能在「⋯ 更多 → 关闭窗口时」里改。"
+        )
+        tray_btn = box.addButton("收起到托盘",
+                                 QMessageBox.ButtonRole.AcceptRole)
+        quit_btn = box.addButton("直接退出",
+                                 QMessageBox.ButtonRole.DestructiveRole)
+        cancel_btn = box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(tray_btn)
+        box.exec()
+
+        clicked = box.clickedButton()
+        if clicked is cancel_btn:
+            return          # 取消 = 什么都不做, 窗口留着
+        _save_setting("close_hint_shown", "1")
+        if clicked is quit_btn:
+            _save_setting("close_behavior", "exit")
+            self._quit_app()
+        else:
+            _save_setting("close_behavior", "tray")
+            self._collapse()
+
+    def _on_escape(self) -> None:
+        """Esc 走和关窗一样的流程, 别再无声无息地消失。"""
+        self.close()
+
     def closeEvent(self, event):
-        if hasattr(self, "_tray") and self._tray is not None:
-            event.ignore()
-            self.hide()
+        event.ignore()          # 先一律不真关, 由下面决定去留
+        if not self._has_tray():
+            # 没有托盘可躲 — 收起来用户就再也找不回来了, 只能真退出
+            self._quit_app()
+            return
+        if _load_setting("close_behavior", "tray") == "exit":
+            self._quit_app()
+            return
+        if _load_setting("close_hint_shown", "0") == "1":
+            self._collapse()
+            return
+        self._ask_close_behavior()
 
 
 # ============================================================================
@@ -572,22 +805,53 @@ def _save_setting(key: str, value: str) -> None:
         print(f"[setting] save failed: {e}")
 
 
-def _tool_btn(text: str, danger: bool = False) -> QToolButton:
+def _db_location() -> str:
+    """当前数据库文件路径 — 「关于」窗口里给用户看的。"""
+    try:
+        from pycal.db.connection import default_db_path
+        return str(default_db_path())
+    except Exception:
+        return "(未知)"
+
+
+def _tool_qss(skin: Skin, danger: bool = False, accent: bool = False) -> str:
+    """工具栏按钮的 QSS。
+
+    普通按钮跟着皮肤走 (深色皮肤下不再是一排白药丸); accent/danger 是
+    固定的强调色, 两种皮肤下都读得清。
+    """
+    if danger:
+        normal, fg = "#FFE5E5", "#C0392B"
+        hover, pressed, border = "#FFD5D5", "#FFC0C0", "#E8A0A0"
+    elif accent:
+        normal, fg = "#EBF5FB", "#1B4F72"
+        hover, pressed, border = "#D6EAF8", "#C6E2F5", "#85C1E9"
+    else:
+        normal, fg = skin.btn_bg, skin.btn_fg
+        hover, pressed, border = skin.btn_hover, skin.btn_pressed, skin.btn_border
+
+    fg_rule = f"color: {fg};" if fg else ""
+    return (
+        f"QToolButton {{ border: 1px solid {border}; border-radius: 4px;"
+        f" background: {normal}; {fg_rule} padding: 4px 8px; }}"
+        f"QToolButton:hover {{ background: {hover}; border-color: #4A90E2; }}"
+        f"QToolButton:pressed {{ background: {pressed}; }}"
+        # 开关型按钮 (置顶/动画) 的选中态 — 由 setProperty("on", ...) 驱动
+        f'QToolButton[on="true"] {{ background: #FFF3B0;'
+        f" border: 1px solid #EFA020; }}"
+    )
+
+
+def _tool_btn(text: str, skin: Optional[Skin] = None,
+              danger: bool = False, accent: bool = False) -> QToolButton:
+    """工具栏按钮 — accent 给主功能上蓝底加粗, danger 给关闭上红底。"""
     b = QToolButton()
     b.setText(text)
     b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-    base_qss = (
-        "QToolButton { border: 1px solid #BBB; border-radius: 4px;"
-        " background: white; padding: 4px 8px; }"
-        "QToolButton:hover { background: #EAF3FF; border-color: #4A90E2; }"
-        "QToolButton:pressed { background: #CCE0FF; }"
+    b.setStyleSheet(
+        _tool_qss(skin or current_skin(), accent=accent, danger=danger)
     )
-    if danger:
-        base_qss = base_qss.replace(
-            "background: white;",
-            "background: #FFE5E5; color: #C0392B;",
-        )
-    b.setStyleSheet(base_qss)
+    b.setProperty("on", "false")
     return b
 
 
@@ -653,10 +917,12 @@ def _make_app_icon() -> QIcon:
     return QIcon(pix)
 
 
-def _build_tray(win: QMainWindow, app: QApplication) -> QSystemTrayIcon:
-    if not QSystemTrayIcon.isSystemTrayAvailable():
-        return QSystemTrayIcon(win)
+def _build_tray(win: QMainWindow, app: QApplication) -> Optional[QSystemTrayIcon]:
     app.setWindowIcon(_make_app_icon())
+    if not QSystemTrayIcon.isSystemTrayAvailable():
+        # 系统没有托盘 (精简版 Windows / 某些服务器环境) —— 必须返回 None,
+        # 否则 closeEvent 会把窗口藏起来, 用户再也找不回来。
+        return None
     tray = QSystemTrayIcon(_make_app_icon(), win)
     tray.setToolTip("PyCal — 桌面日历")
     menu = QMenu()
@@ -690,10 +956,10 @@ def _build_tray(win: QMainWindow, app: QApplication) -> QSystemTrayIcon:
     return tray
 
 
-def _build_reminder_worker(tray: QSystemTrayIcon):
+def _build_reminder_worker(tray: Optional[QSystemTrayIcon]):
     from pycal.notifier import ReminderWorker
     worker = ReminderWorker()
-    if QSystemTrayIcon.isSystemTrayAvailable():
+    if tray is not None:
         worker.attach_tray(tray)
     return worker
 

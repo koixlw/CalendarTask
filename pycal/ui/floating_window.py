@@ -19,7 +19,23 @@ from PySide6.QtCore import Qt, QRect, QPoint, QSize, QEvent
 from PySide6.QtGui import (
     QMouseEvent, QCursor, QKeySequence, QShortcut,
 )
-from PySide6.QtWidgets import QMainWindow, QWidget, QApplication
+from PySide6.QtWidgets import (
+    QMainWindow, QWidget, QApplication, QAbstractButton, QAbstractSpinBox,
+    QComboBox, QLineEdit, QAbstractScrollArea, QTextEdit, QSlider,
+)
+
+
+# 落在这些控件上的鼠标按下必须放行给控件自己处理 — 否则工具栏的按钮
+# 全都点不动 (press 被拖动逻辑吃掉, 按钮永远收不到, clicked 不会触发)。
+_INTERACTIVE = (
+    QAbstractButton,      # QToolButton / QPushButton / QCheckBox …
+    QLineEdit,
+    QAbstractSpinBox,
+    QComboBox,
+    QSlider,
+    QAbstractScrollArea,  # QTextEdit / QPlainTextEdit 的基类
+    QTextEdit,
+)
 
 
 # 八向光标对应表
@@ -77,17 +93,40 @@ class FloatingWindow(QMainWindow):
             child.setMouseTracking(True)
             child.installEventFilter(self)
 
+    def _is_interactive(self, widget: QWidget) -> bool:
+        """控件自己要不要处理这次点击 (按钮 / 输入框 / 滚动区 …)。"""
+        w = widget
+        while w is not None:
+            if isinstance(w, _INTERACTIVE):
+                return True
+            w = w.parentWidget()
+        return False
+
+    def _begin_drag(self, global_pos: QPoint) -> None:
+        """起一次窗口拖动 — grabMouse 让后续 move/release 都进主窗。"""
+        self._drag_pos = global_pos - self.frameGeometry().topLeft()
+        self._resize_dir = None
+        try:
+            self.grabMouse()
+        except Exception:
+            pass
+
     def eventFilter(self, obj, event):
-        """让 drag_area 内的子按钮不误触发, 通过把鼠标事件转发给主窗。"""
+        """拖动区域里只有「空白处」才当作标题栏拖动。
+
+        按钮/输入框上的 press 必须原样放行 —— 之前这里一律 return True,
+        结果工具栏 12 个按钮全部点不动。
+        """
         if event.type() == QEvent.Type.MouseButtonPress and \
                 event.button() == Qt.MouseButton.LeftButton:
-            # 只有在 drag_area 内才转发
-            pos_in_window = obj.mapTo(self, event.position().toPoint())
-            if pos_in_window.y() <= self._drag_area_height:
-                self._drag_pos = event.globalPosition().toPoint() - \
-                    self.frameGeometry().topLeft()
-                self._resize_dir = None
-                return True   # 阻断原本的事件
+            area = self._drag_area
+            in_area = area is not None and (
+                obj is area or area.isAncestorOf(obj))
+            if in_area and not self._is_interactive(obj):
+                pos_in_window = obj.mapTo(self, event.position().toPoint())
+                if pos_in_window.y() <= self._drag_area_height:
+                    self._begin_drag(event.globalPosition().toPoint())
+                    return True   # 阻断原本的事件
         return super().eventFilter(obj, event)
 
     def toggle_maximized(self) -> None:
@@ -129,8 +168,7 @@ class FloatingWindow(QMainWindow):
             local_pos = event.position().toPoint()
             # 1) 标题栏拖动 — 优先级最高
             if self._drag_area and local_pos.y() <= self._drag_area_height:
-                self._drag_pos = global_pos - self.frameGeometry().topLeft()
-                self._resize_dir = None
+                self._begin_drag(global_pos)
                 event.accept()
                 return
             # 2) 边缘 resize
@@ -138,6 +176,10 @@ class FloatingWindow(QMainWindow):
             if direction:
                 self._drag_pos = global_pos
                 self._resize_dir = direction
+                try:
+                    self.grabMouse()
+                except Exception:
+                    pass
                 event.accept()
                 return
         super().mousePressEvent(event)
@@ -148,6 +190,10 @@ class FloatingWindow(QMainWindow):
                 self._drag_pos = None
                 self._resize_dir = None
                 self.unsetCursor()
+                try:
+                    self.releaseMouse()
+                except Exception:
+                    pass
                 event.accept()
                 return
         super().mouseReleaseEvent(event)
@@ -219,8 +265,12 @@ class FloatingWindow(QMainWindow):
     # Esc 关闭
     # ------------------------------------------------------------------
     def _install_escape(self) -> None:
-        shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
-        shortcut.activated.connect(self.hide)
+        self._esc_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        self._esc_shortcut.activated.connect(self._on_escape)
+
+    def _on_escape(self) -> None:
+        """默认收起窗口。子类可覆盖成走自己的 close 流程。"""
+        self.hide()
 
 
 __all__ = ["FloatingWindow"]

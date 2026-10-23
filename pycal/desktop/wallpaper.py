@@ -18,6 +18,7 @@ import sys
 import tempfile
 from pathlib import Path
 from datetime import date
+from typing import Optional
 
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QImage, QPainter, QColor, QFont, QGuiApplication

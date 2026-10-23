@@ -59,7 +59,9 @@ def main() -> int:
 
     if args.cmd in (None, "gui"):
         from pycal.ui.main_window import run
-        return run(fullscreen=not args.no_fullscreen)
+        # 不带子命令时 args 是顶层 Namespace, 没有 no_fullscreen 字段
+        fullscreen = not getattr(args, "no_fullscreen", False)
+        return run(fullscreen=fullscreen)
     if args.cmd == "import":
         from pycal.importer import run_import
         n = run_import(args.source)
@@ -67,7 +69,7 @@ def main() -> int:
         return 0
     if args.cmd == "search":
         from pycal.db.connection import open_default
-        from pycal.search.engine import SearchEngine, SearchOptions
+        from pycal.search import SearchEngine, SearchOptions
         con = open_default()
         eng = SearchEngine(con)
         hits = eng.search(SearchOptions(keyword=args.keyword))

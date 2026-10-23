@@ -146,7 +146,7 @@ class PolishDialog(QDialog):
         o_layout = QVBoxLayout(orig_page)
         self._original = QTextBrowser()
         from pycal.report import render_html
-        self._original.setHtml(render_html(self._report_md, f"原始{kind}"))
+        self._original.setHtml(render_html(self._report_md, f"原始{self._kind}"))
         o_layout.addWidget(self._original)
         self._tabs.addTab(orig_page, "📄 原始版本")
 

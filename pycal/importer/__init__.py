@@ -26,7 +26,7 @@ import sqlite3
 from pathlib import Path
 from typing import Iterable
 
-from pycal.db.connection import open_connection
+from pycal.db.connection import open_connection, default_db_path
 from pycal.db.repository import upsert_item
 from pycal.db.models import CalendarItem
 
@@ -75,14 +75,21 @@ def _iter_source_rows(con: sqlite3.Connection, table: str) -> Iterable[sqlite3.R
 def import_from_desktopcal(
     source_db: str | Path, target_db: str | Path | None = None,
 ) -> int:
-    """从 DesktopCal 导入到 PyCal。返回导入的条目数。"""
-    source = sqlite3.connect(str(source_db))
+    """从 DesktopCal 导入到 PyCal。返回导入的条目数。
+
+    源文件不存在或不可读时返回 0 (不抛异常), 方便 GUI 直接调用。
+    """
+    if not Path(source_db).exists():
+        print(f"[!] 源数据库不存在: {source_db}")
+        return 0
+    try:
+        source = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+    except sqlite3.Error as e:
+        print(f"[!] 无法打开源数据库: {e}")
+        return 0
     source.row_factory = sqlite3.Row
     try:
-        target = open_connection(target_db) if target_db else open_connection(
-            __import__("pycal.db.connection", fromlist=["default_db_path"])
-                .default_db_path()
-        )
+        target = open_connection(target_db or default_db_path())
 
         # 找到主表
         tables = {r["name"].lower() for r in source.execute(

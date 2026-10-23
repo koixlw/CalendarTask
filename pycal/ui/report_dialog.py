@@ -28,7 +28,7 @@ from pycal.report import (
 class ReportDialog(QDialog):
     """报告预览对话框。"""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, start_ai: bool = False):
         super().__init__(parent)
         self.setWindowTitle("PyCal — 日报 / 周报")
         self.resize(900, 720)
@@ -37,6 +37,9 @@ class ReportDialog(QDialog):
         self._ai_polished: Optional[str] = None
         self._build()
         self.refresh()
+        if start_ai:
+            # 从工具栏「✨ AI 日报」进来的 — 直接把润色窗顶上来
+            QTimer.singleShot(0, self._open_ai_polish)
 
     # ------------------------------------------------------------------
     def _build(self) -> None:
@@ -54,7 +57,25 @@ class ReportDialog(QDialog):
         self._btn_weekly.clicked.connect(lambda: self._switch("weekly"))
         top.addWidget(self._btn_daily)
         top.addWidget(self._btn_weekly)
-        top.addSpacing(20)
+        top.addSpacing(16)
+
+        # AI 润色紧挨着模式切换 — 之前它挤在右边的导出按钮堆里, 没人看得见
+        self._btn_ai = QPushButton("✨ AI 润色")
+        self._btn_ai.setStyleSheet(
+            "QPushButton { background: #EBF5FB; color: #1B4F72;"
+            " border: 1px solid #85C1E9; font-weight: bold; padding: 5px 14px; }"
+            "QPushButton:hover { background: #D6EAF8; }"
+            "QPushButton:disabled { background: #EEE; color: #999;"
+            " border-color: #CCC; }"
+        )
+        self._btn_ai.setToolTip(
+            "用 Claude 把这份报告改写得更通顺\n"
+            "可选风格: 简洁精炼 / 专业正式 / 轻松友好 / 带复盘分析\n"
+            "需要环境变量 ANTHROPIC_API_KEY"
+        )
+        self._btn_ai.clicked.connect(self._open_ai_polish)
+        top.addWidget(self._btn_ai)
+        top.addSpacing(16)
 
         self._btn_prev = QPushButton("◀")
         self._btn_next = QPushButton("▶")
@@ -74,17 +95,6 @@ class ReportDialog(QDialog):
 
         self._btn_copy = QPushButton("📋 复制 MD")
         self._btn_copy.clicked.connect(self._copy)
-        self._btn_ai = QPushButton("✨ AI 润色")
-        self._btn_ai.setStyleSheet(
-            "QPushButton { background: #EBF5FB; color: #1B4F72;"
-            " border: 1px solid #85C1E9; font-weight: bold; }"
-            "QPushButton:hover { background: #D6EAF8; }"
-        )
-        self._btn_ai.setToolTip(
-            "用 Claude 把报告改写得更通顺 (可选风格: 简洁/专业/友好/复盘)"
-        )
-        self._btn_ai.clicked.connect(self._open_ai_polish)
-        top.addWidget(self._btn_ai)
         self._btn_save = QPushButton("💾 保存")
         self._btn_save.clicked.connect(self._save)
         self._btn_html = QPushButton("🌐 导出 HTML")
@@ -95,6 +105,12 @@ class ReportDialog(QDialog):
             top.addWidget(b)
 
         root.addLayout(top)
+
+        # 没配 key 时把按钮的用途写脸上, 别让用户以为点坏了
+        from pycal.report.ai_polish import has_api_key
+        if not has_api_key():
+            self._btn_ai.setText("✨ AI 润色 (需 API key)")
+            self._btn_ai.setEnabled(False)
 
         # 摘要条
         self._summary = QLabel("")

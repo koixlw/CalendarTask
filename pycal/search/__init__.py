@@ -63,19 +63,75 @@ class SearchEngine:
         self.con = con
 
     def _fts_candidates(self, keyword: str) -> list[sqlite3.Row]:
+        """候选集 — 分两层策略。
+
+        FTS5 的 unicode61 tokenizer 把连续的中英数字当成**一个** token,
+        例如 "24分钟" 会被切成单个 token, 导致 `MATCH '"24"'` 匹配不到 ——
+        而 DesktopCal 的原始实现是 Python `string.find()` 子串匹配, 是能
+        匹配到的。所以 FTS 只能做**粗筛** (宁可多召回, 不能漏)。
+
+        策略:
+          - 关键字能干净地作为 phrase 匹配 -> 用 FTS (快)
+          - 关键字含中英混排 / 分词边界可能切开 -> 退回 SQL LIKE (准)
+        最终精确匹配一律由 Python 过滤层 (is_content_match_keyword) 负责。
+        """
         kw = normalize_keyword(keyword)
-        if kw:
-            escaped = '"' + kw.replace('"', '""') + '"'
-            cur = self.con.execute(
-                "SELECT i.* FROM calendar_items i"
-                " JOIN items_fts f ON i.rowid = f.rowid"
-                " WHERE items_fts MATCH ? AND i.type != 4",
-                (escaped,),
-            )
-        else:
+        if not kw:
             cur = self.con.execute(
                 "SELECT * FROM calendar_items WHERE type != 4",
             )
+            return cur.fetchall()
+
+        # FTS 分词只在「内容本身不含 CJK 粘连」时才可靠。
+# 判断方法: 查一下 FTS 索引里有多少行含该关键字。如果索引命中数
+# 明显少于 LIKE 子串命中数, 说明分词把关键字切碎了, 退回 LIKE。
+        use_fts = kw.isascii()
+        if use_fts:
+            escaped = '"' + kw.replace('"', '""') + '"'
+            try:
+                cur = self.con.execute(
+                    "SELECT i.* FROM calendar_items i"
+                    " JOIN items_fts f ON i.rowid = f.rowid"
+                    " WHERE items_fts MATCH ? AND i.type != 4",
+                    (escaped,),
+                )
+                rows = cur.fetchall()
+                if rows:
+                    # 交叉验证: LIKE 粗筛的召回必须 >= FTS, 否则说明 FTS 漏了
+                    # (分词把关键字切碎了, 如 "24分钟" 被当成一个 token)
+                    like_kw_0 = (
+                        kw.replace("\\", "\\\\").replace("%", "\\%")
+                          .replace("_", "\\_")
+                    )
+                    like_rows = self.con.execute(
+                        "SELECT item_id FROM calendar_items"
+                        " WHERE type != 4"
+                        "   AND (title LIKE ? ESCAPE '\\'"
+                        "     OR content LIKE ? ESCAPE '\\')",
+                        (f"%{like_kw_0}%", f"%{like_kw_0}%"),
+                    ).fetchall()
+                    if len(like_rows) > len(rows):
+                        pass          # FTS 漏了 -> 落到下面的 LIKE 分支
+                    else:
+                        return rows
+            except sqlite3.OperationalError:
+                pass
+
+        # 含 CJK 或 FTS 没命中 -> 用 LIKE 子串匹配兜底
+        # 先转义 LIKE 通配符, 否则用户搜 "50%" 或 "a_b" 会误召回
+        like_kw = (
+            kw.replace("\\", "\\\\")
+              .replace("%", "\\%")
+              .replace("_", "\\_")
+        )
+        pattern = f"%{like_kw}%"
+        cur = self.con.execute(
+            "SELECT * FROM calendar_items"
+            " WHERE type != 4"
+            "   AND (title LIKE ? ESCAPE '\\'"
+            "     OR content LIKE ? ESCAPE '\\')",
+            (pattern, pattern),
+        )
         return cur.fetchall()
 
     def filter_by_range(

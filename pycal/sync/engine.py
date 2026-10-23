@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from typing import Callable, Optional
 
@@ -278,7 +278,7 @@ class SyncEngine:
             except CaldavError as e:
                 r.errors.append(f"冲突解决(本地胜)失败: {e.message}")
         else:
-            self._progress(f"⚠ 冲突→远端胜: {remote.item.title or item_id}")
+            self._progress(f"⚠ 冲突→远端胜: {remote.item.title or remote.item.item_id}")
             self._apply_remote(remote, link)
             r.pulled += 1
 
@@ -332,6 +332,8 @@ class SyncEngine:
         ev = remote.ical_event
         for field_name in ("LAST-MODIFIED", "DTSTAMP", "CREATED"):
             v = ev.get(field_name)
+            if v is None:
+                continue
             dt = getattr(v, "dt", None)
             if isinstance(dt, datetime):
                 if dt.tzinfo is None:

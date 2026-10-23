@@ -1,5 +1,11 @@
 """月视图 — 6×7 格子, 点击编辑, 图标类型化, 颜色条。
 
+交互:
+  - 单击 ☐   勾选/取消勾选这一行 (立刻存库)
+  - 双击 文字 打开该条目的编辑器
+  - 右键      当天菜单 (新建 / 编辑 / 删除)
+  - 空白处双击 新建
+
 Phase 1 改进:
   - 鼠标 hover 高亮整格
   - 单击: 弹出新建 (空白处) 或直接编辑 (有内容处)
@@ -12,11 +18,12 @@ Phase 1 改进:
 
 from __future__ import annotations
 import re
-from datetime import date, timedelta, datetime
+from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal, QDate, QTimer, QPoint
-from PySide6.QtGui import QColor, QFont, QPainter, QIcon, QPixmap, QAction
+from PySide6.QtCore import Qt, Signal, QPoint
+from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import (
     QWidget, QGridLayout, QFrame, QVBoxLayout, QHBoxLayout, QLabel,
     QMenu, QSizePolicy,
@@ -36,6 +43,8 @@ _TYPE_GLYPH = {
     2: "⏰",  # 提醒
     3: "🎯",  # 倒数日 (U+1F3AF 不通用, fallback)
 }
+
+_HEADERS = ["一", "二", "三", "四", "五", "六", "日"]
 
 
 def _glyph_for_type(t: int) -> str:
@@ -62,31 +71,185 @@ def _parse_lines(content: str) -> list[tuple[bool, str]]:
     return out
 
 
-def _rich_text_lines(content: str, color_ref: int) -> str:
-    """把 <font color="#XXX"> 转为 QTextEdit 用的 <span style='color:#'>。"""
-    color = color_to_hex(color_ref)
-    # 简单替换: <font color='#XXXXXX'> -> <span style='color:#XXXXXX'>; </font> -> </span>
-    if not content:
-        return ""
-    text = re.sub(
-        r"<\s*font\s+color\s*=\s*[\"']?#?([0-9A-Fa-f]{6})[\"']?\s*>",
-        lambda m: f"<span style='color:#{m.group(1)}'>",
-        content,
-    )
-    text = re.sub(r"</\s*font\s*>", "</span>", text)
-    return text
+# ============================================================================
+# 配色 — 由皮肤派生 (深色皮肤下格子不再白底黑字)
+# ============================================================================
+@dataclass(frozen=True)
+class CellColors:
+    body_bg: str = "#FFFFFF"
+    muted_bg: str = "#F5F5F5"      # 非本月的格子
+    today_bg: str = "#FFF8D2"
+    hover_bg: str = "#F0F8FF"
+    border: str = "#BBBBBB"
+    today_border: str = "#0066CC"
+    num_fg: str = "#222222"
+    muted_fg: str = "#AAAAAA"
+    done_fg: str = "#9AA0A6"       # 已完成那行的字色
+    text_fg: str = "#222222"
+    sub_fg: str = "#888888"
+    header_fg: str = "#555555"
+
+
+_DARK_SKIN_NAMES = {"dark_mode"}
+
+
+def colors_for_skin(skin_name: str) -> CellColors:
+    """按皮肤名返回格子配色 — 只为 dark_mode 单独一套。"""
+    if skin_name in _DARK_SKIN_NAMES:
+        return CellColors(
+            body_bg="#2B2B30", muted_bg="#232327", today_bg="#4A4326",
+            hover_bg="#33333A", border="#4A4A52", today_border="#4A90E2",
+            num_fg="#ECEFF4", muted_fg="#6E6E76", done_fg="#75797F",
+            text_fg="#ECEFF4", sub_fg="#9AA0A6", header_fg="#C8CDD6",
+        )
+    return CellColors()
+
+
+# ============================================================================
+# 勾选写回 — 把 content 里第 N 条有效行的 [+] 标记加上/去掉
+# ============================================================================
+def _toggle_line_in_content(content: str, line_idx: int, mark_done: bool) -> str:
+    """改写 content — line_idx 是「跳过空行后」的序号, 与 _parse_lines 对齐。
+
+    空行原样保留, 行序不变, 只动目标行的 [+] 前缀。
+    """
+    out: list[str] = []
+    seen = 0
+    for raw in (content or "").splitlines():
+        if not raw.strip():
+            out.append(raw)
+            continue
+        if seen == line_idx:
+            m = _LINE_RE.match(raw)
+            body = m.group(1).strip() if m else raw.strip()
+            out.append(f"[+] {body}" if mark_done else body)
+        else:
+            out.append(raw)
+        seen += 1
+    return "\n".join(out)
+
+
+# ============================================================================
+# LineRow — 一行内容 (☐ + 文字)
+# ============================================================================
+class LineRow(QWidget):
+    """月视图里的一行内容。
+
+    单击左侧 ☐ → 勾选/取消 (sig_toggled); 双击文字 → 打开条目 (sig_open)。
+
+    line_idx 是该行在 item.content 里的序号 (跳过空行);
+    line_idx 为 None 表示这是「整条完成」开关 — 写 is_completed 字段。
+    """
+
+    sig_toggled = Signal(str, object, bool)   # (item_id, line_idx|None, 新状态)
+    sig_open = Signal(str, object)            # (item_id, line_idx|None)
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._lay = QHBoxLayout(self)
+        self._lay.setContentsMargins(0, 0, 0, 0)
+        self._lay.setSpacing(3)
+
+        self._font = QFont()
+        self._font.setPointSize(8)
+
+        self._box = QLabel("☐")
+        self._box.setFont(self._font)
+        self._box.setFixedWidth(13)
+        self._box.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self._text = QLabel("")
+        self._text.setFont(self._font)
+        self._text.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+
+        self._lay.addWidget(self._box, 0)
+        self._lay.addWidget(self._text, 1)
+        self.setFixedHeight(15)
+
+        self._item_id = ""
+        self._line_idx: Optional[int] = None
+        self._label = ""
+        self._done = False
+        self._fg = "#222222"
+        self._done_fg = "#9AA0A6"
+
+        self._box.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._box.setToolTip("单击打勾")
+
+    # ------------------------------------------------------------------
+    def bind(self, item_id: str, text: str, done: bool,
+             line_idx: Optional[int], fg: str, done_fg: str) -> None:
+        self._item_id = item_id
+        self._line_idx = line_idx
+        self._label = text
+        self._done = done
+        self._fg = fg
+        self._done_fg = done_fg
+        self._label = text
+        self._render()
+
+    def _render(self) -> None:
+        self._box.setText("☑" if self._done else "☐")
+        fg = self._done_fg if self._done else self._fg
+        for lbl in (self._box, self._text):
+            lbl.setStyleSheet(f"color: {fg}; background: transparent;")
+        # 已完成的行加删除线 — QSS 不支持 text-decoration, 走 QFont
+        self._font.setStrikeOut(self._done)
+        self._text.setFont(self._font)
+        self._elide()
+
+    def _elide(self) -> None:
+        """一行放不下就截成省略号 — 完整内容双击进编辑器看。"""
+        if self.width() <= 0:
+            return    # 还没被布局定过尺寸 — 等 resizeEvent 再截
+        avail = max(10, self.width() - self._box.width() - self._lay.spacing() - 2)
+        self._text.setText(QFontMetrics(self._font).elidedText(
+            self._label, Qt.TextElideMode.ElideRight, avail))
+
+    def resizeEvent(self, ev):
+        self._elide()
+        super().resizeEvent(ev)
+
+    def set_done_visually(self, done: bool) -> None:
+        """从外部同步状态 (不发射信号) — 存库失败时回滚用。"""
+        self._done = done
+        self._render()
+
+    # ------------------------------------------------------------------
+    def mousePressEvent(self, ev):
+        # 只认左侧的 ☐ — 避免和「双击打开编辑器」互相打架
+        if ev.button() == Qt.MouseButton.LeftButton and \
+                ev.position().x() <= self._box.width() + 4:
+            self._done = not self._done
+            self._render()
+            self.sig_toggled.emit(self._item_id, self._line_idx, self._done)
+            ev.accept()
+            return
+        super().mousePressEvent(ev)
+
+    def mouseDoubleClickEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton:
+            self.sig_open.emit(self._item_id, self._line_idx)
+            ev.accept()
+            return
+        super().mouseDoubleClickEvent(ev)
 
 
 # ============================================================================
 # DayCell — 单日格
 # ============================================================================
 class DayCell(QFrame):
-    """单日格 widget — 显示日期号、类型标记、内容预览。"""
+    """单日格 widget — 显示日期号、类型标记、内容行 (每行可勾选)。"""
 
-    sig_single_click = Signal(str)         # day_iso (左键单击 — 当前仅选中)
+    MAX_ROWS = 5        # 一格最多显示几条, 剩下的折成 "+N 更多"
+
+    sig_single_click = Signal(str)         # day_iso (左键单击空白处)
     sig_double_click = Signal(str)         # day_iso (左键双击 — 编辑/新建)
     sig_right_click = Signal(str)          # day_iso (右键 — 弹出菜单)
-    sig_toggle_complete = Signal(str, int, int)  # (day_iso, item_index_in_cell, new_state)
+    sig_toggle_line = Signal(str, object, bool)   # (item_id, line_idx|None, 新状态)
+    sig_open_item = Signal(str)            # (item_id) — 双击某一行
 
     def __init__(
         self,
@@ -95,13 +258,22 @@ class DayCell(QFrame):
         in_month: bool = True,
         is_today: bool = False,
         is_weekend: bool = False,
+        colors: Optional[CellColors] = None,
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
+        # ID 选择器 — 用类型选择器会连格子里的 QLabel 一起框上
+        # (QLabel 是 QFrame 的子类), 整格会变成一层套一层的蓝格子
+        self.setObjectName("DayCell")
         self.day_iso = day_iso
+        self.day_num = day_num          # _build() 里要用
         self.in_month = in_month
         self.is_today = is_today
+        self.is_weekend = is_weekend
         self._items: list[CalendarItem] = []
+        self._colors = colors or CellColors()
+        self._hovered = False
+        self._rows: list[LineRow] = []
 
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setMinimumSize(110, 80)
@@ -123,7 +295,9 @@ class DayCell(QFrame):
             )
             self._sub_lbl.setText(text)
         else:
-            self._sub_lbl.setStyleSheet("color: #888; font-style: italic;")
+            self._sub_lbl.setStyleSheet(
+                f"color: {self._colors.sub_fg}; font-style: italic;"
+            )
             self._sub_lbl.setText(text)
 
     def _build(self) -> None:
@@ -156,18 +330,30 @@ class DayCell(QFrame):
         top.addWidget(self._type_lbl)
         self._lay.addLayout(top)
 
-        # 内容预览
-        self._body = QLabel("")
-        self._body.setWordWrap(True)
-        self._body.setStyleSheet("font-size: 9pt;")
-        self._body.setTextFormat(Qt.TextFormat.RichText)
-        self._lay.addWidget(self._body, 1)
+        # 内容行 (每行一个可勾选的 LineRow)
+        self._rows_lay = QVBoxLayout()
+        self._rows_lay.setContentsMargins(0, 0, 0, 0)
+        self._rows_lay.setSpacing(0)
+        self._lay.addLayout(self._rows_lay, 1)
+
+        # "+N 更多"
+        self._more_lbl = QLabel("")
+        self._more_lbl.setStyleSheet(f"color: {self._colors.sub_fg};")
+        self._more_lbl.setFont(QFont("", 7))
+        self._more_lbl.setVisible(False)
+        self._lay.addWidget(self._more_lbl)
 
     # ------------------------------------------------------------------
     # 公共
     # ------------------------------------------------------------------
     def set_items(self, items: list[CalendarItem]) -> None:
         self._items = items
+        self._refresh()
+
+    def set_palette(self, colors: CellColors) -> None:
+        """换皮肤时刷新配色 — 已有行也要重刷一次字色。"""
+        self._colors = colors
+        self._refresh_bg()
         self._refresh()
 
     def set_subtitle(self, text: str) -> None:
@@ -178,52 +364,89 @@ class DayCell(QFrame):
         self._apply_subtitle(clean, is_jieqi=is_jieqi)
 
     def _refresh_bg(self) -> None:
+        c = self._colors
         if not self.in_month:
-            bg = "#F5F5F5"
-            fg = "#AAA"
+            bg, fg = c.muted_bg, c.muted_fg
         elif self.is_today:
-            bg = "#FFF8D2"
-            fg = "#222"
+            bg, fg = c.today_bg, c.num_fg
         else:
-            bg = "white"
-            fg = "#222"
-        if not self.in_month:
-            # 周末做小色差: 仍 in_month=True 时
-            pass
-        border_color = "#0066CC" if self.is_today else "#BBB"
-        border_w = 2 if self.is_today else 1
+            bg, fg = c.body_bg, c.num_fg
+        if self._hovered and not self.is_today:
+            bg, border_color, border_w = c.hover_bg, "#4A90E2", 1
+        else:
+            border_color = c.today_border if self.is_today else c.border
+            border_w = 2 if self.is_today else 1
         self.setStyleSheet(
-            f"QFrame {{ background: {bg}; border: {border_w}px solid {border_color}; }}"
+            f"#DayCell {{ background: {bg};"
+            f" border: {border_w}px solid {border_color}; }}"
         )
         self._num_lbl.setStyleSheet(f"color: {fg};")
+        self._sub_lbl.setStyleSheet(
+            f"color: {c.sub_fg}; font-style: italic; font-size: 7pt;"
+        )
+        self._more_lbl.setStyleSheet(f"color: {c.sub_fg}; font-size: 7pt;")
+
+    # ------------------------------------------------------------------
+    def _rows_for_display(self) -> list[tuple[CalendarItem, str, bool, Optional[int]]]:
+        """把当天的条目摊平成可勾选的行: (条目, 文字, 已完成, line_idx)。
+
+        line_idx=None 表示这一行勾的是「整条完成」(is_completed 字段),
+        用于有标题但没有多行内容的条目, 以及重复/提醒/倒数日这类整条型条目。
+        """
+        out: list[tuple[CalendarItem, str, bool, Optional[int]]] = []
+        for it in self._items:
+            if it.type != 0:
+                title = it.title or (
+                    it.content.splitlines()[0] if it.content else "(无标题)"
+                )
+                out.append((it, f"{_glyph_for_type(it.type)} {title}",
+                            bool(it.is_completed), None))
+                continue
+            lines = _parse_lines(it.content)
+            if lines:
+                for idx, (completed, text) in enumerate(lines):
+                    out.append((it, text, completed, idx))
+            elif it.title:
+                out.append((it, it.title, bool(it.is_completed), None))
+        return out
 
     def _refresh(self) -> None:
         # 类型图标: 第一个非格子条目的类型
         types_in_cell = sorted({it.type for it in self._items if it.type != 0})
-        if types_in_cell:
-            self._type_lbl.setText(_glyph_for_type(types_in_cell[0]))
-        else:
-            self._type_lbl.setText("")
+        self._type_lbl.setText(
+            _glyph_for_type(types_in_cell[0]) if types_in_cell else ""
+        )
 
-        # 渲染内容预览
-        rendered: list[str] = []
-        for it in self._items:
-            color_tag = f"<span style='color:{color_to_hex(it.color_ref)}'>"
-            if it.type != 0:
-                title = it.title or (it.content.splitlines()[0] if it.content else "(无标题)")
-                rendered.append(
-                    f"{color_tag}{_glyph_for_type(it.type)} {title}</span>"
-                )
-                continue
-            for completed, text in _parse_lines(it.content):
-                prefix = "☑" if completed else "☐"
-                line = f"{color_tag}{prefix} {text}</span>" if it.color_ref \
-                    else f"{prefix} {text}"
-                rendered.append(line)
-        body = "<br/>".join(rendered[:5])
-        if len(rendered) > 5:
-            body += f"<br/><span style='color:#888'>+{len(rendered) - 5} 更多</span>"
-        self._body.setText(body)
+        rows = self._rows_for_display()
+        shown, overflow = rows[:self.MAX_ROWS], len(rows) - self.MAX_ROWS
+
+        # 复用已有的 LineRow — 避免每次刷新重建 42×5 个控件
+        while len(self._rows) < len(shown):
+            row = LineRow(self)
+            row.sig_toggled.connect(self._on_row_toggled)
+            row.sig_open.connect(self._on_row_open)
+            self._rows_lay.addWidget(row)
+            self._rows.append(row)
+
+        for i, row in enumerate(self._rows):
+            if i < len(shown):
+                it, text, done, idx = shown[i]
+                fg = color_to_hex(it.color_ref) if it.color_ref \
+                    else self._colors.text_fg
+                row.bind(it.item_id, text, done, idx, fg, self._colors.done_fg)
+                row.setVisible(True)
+            else:
+                row.setVisible(False)
+
+        self._more_lbl.setVisible(overflow > 0)
+        if overflow > 0:
+            self._more_lbl.setText(f"+{overflow} 更多")
+
+    def _on_row_toggled(self, item_id: str, line_idx, done: bool) -> None:
+        self.sig_toggle_line.emit(item_id, line_idx, done)
+
+    def _on_row_open(self, item_id: str, line_idx) -> None:
+        self.sig_open_item.emit(item_id)
 
     # ------------------------------------------------------------------
     # 鼠标事件
@@ -239,13 +462,12 @@ class DayCell(QFrame):
             self.sig_double_click.emit(self.day_iso)
 
     def enterEvent(self, ev):
-        if not self.is_today:
-            self.setStyleSheet(
-                "QFrame { background: #F0F8FF; border: 1px solid #4A90E2; }"
-            )
+        self._hovered = True
+        self._refresh_bg()
         super().enterEvent(ev)
 
     def leaveEvent(self, ev):
+        self._hovered = False
         self._refresh_bg()
         super().leaveEvent(ev)
 
@@ -264,13 +486,16 @@ class MonthView(QWidget):
     sig_new_item = Signal(str, int)        # (day_iso, type)
     sig_edit_day = Signal(str)             # (day_iso)  — 双击空白处时
     sig_request_menu = Signal(str, object) # (day_iso, cell) — 右键
+    sig_data_changed = Signal()            # 勾选/增删后 — 主窗据此刷新计数
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: Optional[QWidget] = None,
+                 skin_name: str = "light_default"):
         super().__init__(parent)
         self._cur = date.today().replace(day=1)
         self._grid = QGridLayout(self)
         self._grid.setSpacing(2)
         self._cells: dict[str, DayCell] = {}
+        self._colors = colors_for_skin(skin_name)
 
         # 双击直接进编辑 (默认双击编辑该日第一条或新建)
         self.sig_edit_day.connect(self._handle_double_click)
@@ -279,6 +504,22 @@ class MonthView(QWidget):
         self.sig_request_menu.connect(self._show_context_menu)
 
         self._render()
+
+    # ------------------------------------------------------------------
+    # 皮肤
+    # ------------------------------------------------------------------
+    def apply_skin(self, skin_name: str) -> None:
+        """换皮肤时把新配色推给所有格子 (含星期表头)。"""
+        self._colors = colors_for_skin(skin_name)
+        for col in range(len(_HEADERS)):
+            item = self._grid.itemAtPosition(0, col)
+            if item is not None and item.widget() is not None:
+                item.widget().setStyleSheet(
+                    f"font-weight: bold; color: {self._colors.header_fg};"
+                    " padding: 2px;"
+                )
+        for cell in self._cells.values():
+            cell.set_palette(self._colors)
 
     # ------------------------------------------------------------------
     # Public
@@ -315,7 +556,7 @@ class MonthView(QWidget):
         cell = self._cells.get(day_iso)
         if cell:
             cell.setStyleSheet(
-                "QFrame { background: #FFE5B4; border: 2px solid #FF8C00; }"
+                "#DayCell { background: #FFE5B4; border: 2px solid #FF8C00; }"
             )
             cell.repaint()
 
@@ -335,11 +576,12 @@ class MonthView(QWidget):
         self._cells.clear()
 
         # 星期标题 (一~日)
-        headers = ["一", "二", "三", "四", "五", "六", "日"]
-        for col, h in enumerate(headers):
+        for col, h in enumerate(_HEADERS):
             lbl = QLabel(h)
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setStyleSheet("font-weight: bold; color: #555; padding: 2px;")
+            lbl.setStyleSheet(
+                f"font-weight: bold; color: {self._colors.header_fg}; padding: 2px;"
+            )
             self._grid.addWidget(lbl, 0, col)
 
         first_weekday = self._cur.weekday()  # 0=Mon
@@ -357,11 +599,14 @@ class MonthView(QWidget):
                     in_month=in_month,
                     is_today=is_today,
                     is_weekend=is_weekend,
+                    colors=self._colors,
                 )
                 cell.set_subtitle(self._subtitle_for(d))
                 cell.sig_double_click.connect(self.sig_edit_day)
                 cell.sig_single_click.connect(self._handle_single_click)
                 cell.sig_right_click.connect(self._handle_right_click)
+                cell.sig_toggle_line.connect(self._handle_toggle)
+                cell.sig_open_item.connect(self.sig_edit_item)
                 self._grid.addWidget(cell, week + 1, col)
                 self._cells[d.isoformat()] = cell
 
@@ -455,6 +700,31 @@ class MonthView(QWidget):
         con = open_default()
         con.execute("DELETE FROM calendar_items WHERE date = ?", (day_iso,))
         self._refresh_data()
+        self.sig_data_changed.emit()
+
+    def _handle_toggle(self, item_id: str, line_idx, done: bool) -> None:
+        """勾选写库 — line_idx=None 改 is_completed, 否则改 content 里的 [+]。
+
+        存库失败时把格子里的勾回滚, 免得 UI 和数据库对不上。
+        """
+        con = open_default()
+        it = get_item(con, item_id)
+        if it is None:
+            print(f"[MonthView] 勾选失败: 找不到条目 {item_id}")
+            self._refresh_data()
+            return
+        try:
+            if line_idx is None:
+                it.is_completed = 1 if done else 0
+            else:
+                it.content = _toggle_line_in_content(it.content, line_idx, done)
+            upsert_item(con, it)
+        except Exception as e:
+            print(f"[MonthView] 勾选存库失败: {e}")
+            self._refresh_data()      # 回滚 UI
+            return
+        self._refresh_data()
+        self.sig_data_changed.emit()
 
     def _handle_new_request(self, day_iso: str, type: int) -> None:
         from pycal.ui.editor import ItemEditorDialog
@@ -471,6 +741,7 @@ class MonthView(QWidget):
                 countdown=dlg.result_countdown(),
             )
             self._refresh_data()
+            self.sig_data_changed.emit()
 
     def _handle_edit_item(self, item_id: str) -> None:
         from pycal.ui.editor import ItemEditorDialog
@@ -488,3 +759,4 @@ class MonthView(QWidget):
                 countdown=dlg.result_countdown(),
             )
             self._refresh_data()
+            self.sig_data_changed.emit()
