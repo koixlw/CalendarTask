@@ -63,7 +63,7 @@ class FloatingWindow(QMainWindow):
                 ...
     """
 
-    EDGE_MARGIN = 6   # 边缘 resize 触发宽度
+    EDGE_MARGIN = 8   # 边缘 resize 触发宽度 (无边框窗口, 边太窄不好抓)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)

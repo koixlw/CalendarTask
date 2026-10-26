@@ -63,10 +63,10 @@ def main() -> int:
     mw.show()
     app.processEvents()
     check("PyCalMainWindow 构建+显示", lambda: mw, destroy=False)
-    check("月视图有 42 格",
+    check("月视图格数 = 本月占到的周数 × 7",
           lambda: (_ for _ in ()).throw(AssertionError(
-              f"只渲染了 {len(mw._active_month_view._cells)} 格"))
-          if len(mw._active_month_view._cells) != 42 else None)
+              f"渲染了 {len(mw._active_month_view._cells)} 格"))
+          if len(mw._active_month_view._cells) not in (28, 35, 42) else None)
     check("月份标签非空",
           lambda: None if mw._month_label.text() else
           (_ for _ in ()).throw(AssertionError("月份标签为空")))

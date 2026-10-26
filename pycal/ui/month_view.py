@@ -321,7 +321,7 @@ class DayCell(QFrame):
         # 顶部: 日期号 + 类型小图标
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
-        self._num_lbl = QLabel(str(self.day_num))
+        self._num_lbl = QLabel(str(self.day_num) if self.in_month else "")
         top.addWidget(self._num_lbl)
 
         # 节假日/lunar 副标题
@@ -384,6 +384,11 @@ class DayCell(QFrame):
 
     def set_subtitle(self, text: str) -> None:
         """外部调用入口 — 同时处理 jieqi 标记与节日颜色。"""
+        if not self.in_month:
+            # 不是本月的格子 → 不显示日期号, 也不显示农历/节气。
+            # 「以月为单位」: 这一格是上/下个月的日子, 空着就行。
+            self._sub_lbl.setText("")
+            return
         # text 可能已被 _subtitle_for 加上 "⚡ " 前缀
         is_jieqi = text.startswith("⚡ ")
         clean = text[2:] if is_jieqi else text
@@ -639,7 +644,13 @@ class MonthView(QWidget):
         start = self._cur - timedelta(days=first_weekday)
         today_iso = date.today().isoformat()
 
-        for week in range(6):
+        # 只画这个月真正占到的周数 — 固定 6 行的话, 有 5 周的月份底下
+        # 会空出一整行下个月的日子 (10 月就是这样: 最后一行全是 11 月)。
+        from calendar import monthrange
+        days_in_month = monthrange(self._cur.year, self._cur.month)[1]
+        weeks = (first_weekday + days_in_month + 6) // 7   # 向上取整
+
+        for week in range(weeks):
             for col in range(7):
                 d = start + timedelta(days=week * 7 + col)
                 in_month = d.month == self._cur.month

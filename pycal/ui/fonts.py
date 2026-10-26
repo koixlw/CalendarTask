@@ -45,8 +45,8 @@ class Fonts:
     # ── 配套尺寸 ──
     row_h: int        # 条目行高 (基准 15px)
     box_w: int        # ☐ 的宽度 (基准 13px)
-    cell_min_w: int   # 格子最小宽 (基准 110px)
-    cell_min_h: int   # 格子最小高 (基准 80px)
+    cell_min_w: int   # 格子最小宽 (基准 64px)
+    cell_min_h: int   # 格子最小高 (基准 56px)
     bar_h: int        # 工具栏高度 (基准 36px)
     max_rows: int     # 一格最多显示几条内容
     # ── 年视图的小月 ──
@@ -98,8 +98,8 @@ def fonts_for(scale: float = DEFAULT_SCALE) -> Fonts:
         status=_pt(9, s),
         row_h=_pt(15, s, minimum=11),
         box_w=_pt(13, s, minimum=9),
-        cell_min_w=_pt(110, s),
-        cell_min_h=_pt(80, s),
+        cell_min_w=_pt(64, s),
+        cell_min_h=_pt(56, s),
         bar_h=_pt(36, s, minimum=24),
         max_rows=max_rows_for(s),
         mini_title=_pt(9, s),

@@ -144,8 +144,9 @@ def main() -> int:
     today_cell = win._month_left._cells[TODAY]
     base = fonts_for(DEFAULT_SCALE)
 
-    check("月视图有两层 × 42 个格子", lambda: _assert(
-        len(cells) == 42 and len(win._month_right._cells) == 42,
+    check("月视图有两层, 格数一致且是整周数", lambda: _assert(
+        len(cells) in (28, 35, 42)
+        and len(win._month_right._cells) == len(cells),
         f"{len(cells)} / {len(win._month_right._cells)}",
     ))
     check("默认档: 条目行 8pt / 行高 15px", lambda: _assert(

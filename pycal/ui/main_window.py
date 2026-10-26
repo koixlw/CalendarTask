@@ -115,6 +115,9 @@ def run(fullscreen: bool = True) -> int:
 class PyCalMainWindow(FloatingWindow):
     """PyCal 主窗 — 继承 FloatingWindow (可拖动 + resize)。"""
 
+    # 窗口窄于这个宽度 → 工具栏按钮切成纯图标
+    _COMPACT_UNDER = 1460
+
     def __init__(self, app: QApplication, fullscreen: bool = True):
         super().__init__()
         self._app = app
@@ -137,6 +140,10 @@ class PyCalMainWindow(FloatingWindow):
         self._base_app_pt = app.font().pointSize() if app.font().pointSize() > 0 else 0
 
         self.setWindowTitle("PyCal")
+        # 铺满屏幕 / 普通窗口 两种状态 — 启动时铺满 (桌面日历嘛),
+        # 点「□」收成普通窗口后就能自由拖边缩放
+        self._full = fullscreen
+        self._normal_rect: Optional[QRect] = None
         if fullscreen:
             screen = app.primaryScreen().geometry()
             self.setGeometry(screen)
@@ -179,6 +186,7 @@ class PyCalMainWindow(FloatingWindow):
 
         title = QLabel("📅 PyCal")
         title.setProperty("role", "title")
+        self._title_lbl = title
         bar_layout.addWidget(title)
         bar_layout.addSpacing(20)
 
@@ -222,6 +230,23 @@ class PyCalMainWindow(FloatingWindow):
             self._btn_min: (False, False), self._btn_max: (False, False),
             self._btn_exit: (False, True),
         }
+        # (宽时的字, 窄时的字) — 窗口一小, 按钮就只留图标,
+        # 不然光工具栏就要 1400px, 窗口根本缩不下去
+        self._tool_labels = {
+            self._btn_prev: ("◀", "◀"),
+            self._btn_next: ("▶", "▶"),
+            self._btn_today: ("今天", "今"),
+            self._btn_year: ("📆 年视图", "📆"),
+            self._btn_report: ("📑 日报", "📑"),
+            self._btn_ai: ("✨ AI 日报", "✨"),
+            self._btn_search: ("🔍 搜索", "🔍"),
+            self._btn_more: ("⋯ 更多", "⋯"),
+            self._btn_help: ("？ 帮助", "？"),
+            self._btn_min: ("— 收起", "—"),
+            self._btn_max: ("□ 最大化", "□"),
+            self._btn_exit: ("× 退出", "×"),
+        }
+        self._compact = False
         # ⚠ 只把「右区」这些加进布局。_tool_meta 里还包含 prev/next/today,
         #   它们上面已经 addWidget 过了 —— 对已入布局的 widget 再 addWidget,
         #   Qt 会把它**移走**重新插到末尾, 月份导航会莫名其妙跑到工具栏右边。
@@ -333,7 +358,9 @@ class PyCalMainWindow(FloatingWindow):
             (self._btn_more, "全部功能菜单\n云同步 / 便签 / 导入 / 外观 / 壁纸 …"),
             (self._btn_help, "快捷键与功能说明\n快捷键 F1"),
             (self._btn_min, "收起窗口到托盘\n程序继续在后台运行, 提醒照常弹出\n(想彻底退出请点「× 退出」)"),
-            (self._btn_max, "最大化 / 还原窗口\n也可双击工具栏空白处"),
+            (self._btn_max, "铺满屏幕 / 收成窗口\n"
+                            "收成窗口之后拖四边和四角就能自由缩放\n"
+                            "也可双击工具栏空白处"),
             (self._btn_exit, "彻底退出 PyCal\n后台提醒和自动同步都会停止"),
         ]:
             b.setToolTip(tip)
@@ -363,6 +390,10 @@ class PyCalMainWindow(FloatingWindow):
         self._report_timer.timeout.connect(self._auto_report_tick)
         self._report_timer.start(30 * 60 * 1000)
         QTimer.singleShot(60_000, self._auto_report_tick)   # 启动 1min 后首检
+
+        # 窄屏 (比如 1366 的本) 一开始就该是紧凑工具栏 — 等第一次 resize
+        # 才切的话, 窗口会先被撑到 1448 宽, 超出屏幕
+        self._apply_toolbar_compact()
 
     # ------------------------------------------------------------------
     # 月 / 年视图切换
@@ -412,6 +443,60 @@ class PyCalMainWindow(FloatingWindow):
         btn.setProperty("on", "true" if on else "false")
         btn.style().unpolish(btn)
         btn.style().polish(btn)
+
+    def _apply_toolbar_compact(self) -> None:
+        """窗口窄了 → 工具栏按钮只留图标。
+
+        12 个带字的按钮最少要 1400px, 不切的话窗口的下限就被工具栏钉死,
+        「自由缩放」就成了空话。tooltip 里始终写着完整名字, 认不出来可以
+        把鼠标停上去看。
+        """
+        compact = self.width() < self._COMPACT_UNDER
+        if compact != self._compact:
+            self._compact = compact
+            for btn, (full, short) in self._tool_labels.items():
+                btn.setText(short if compact else full)
+                if compact:
+                    btn.setFixedWidth(32)
+                else:
+                    btn.setMinimumWidth(0)
+                    btn.setMaximumWidth(16777215)
+            self._title_lbl.setText("📅" if compact else "📅 PyCal")
+            self._month_label.setMinimumWidth(100 if compact else 140)
+            self._restyle_tools()
+            self._style_month_label()
+        self._update_max_btn()
+        self._update_month_label()
+
+    def _update_max_btn(self) -> None:
+        """「铺满 / 收成」按钮的文案跟着当前状态走。"""
+        _full, short = self._tool_labels[self._btn_max]
+        if self._compact:
+            self._btn_max.setText(short)
+        else:
+            self._btn_max.setText("□ 收成窗口" if self._full else "□ 铺满屏幕")
+
+    def _style_month_label(self) -> None:
+        """月份标签的字号 — 紧凑模式下小一号, 否则放不下。"""
+        if getattr(self, "_compact", False):
+            self._month_label.setStyleSheet(
+                f"font-size: {max(9, self._fonts.month - 3)}pt;"
+                f" font-weight: bold;"
+            )
+        else:
+            self._month_label.setStyleSheet("")
+
+    def _restyle_tools(self) -> None:
+        """工具栏按钮重刷样式 — 换皮肤 / 调字号 / 切紧凑模式都走这儿。"""
+        for btn, (accent, danger) in getattr(self, "_tool_meta", {}).items():
+            btn.setStyleSheet(_tool_qss(
+                self._skin, accent=accent, danger=danger,
+                fonts=self._fonts, compact=getattr(self, "_compact", False),
+            ))
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._apply_toolbar_compact()
 
     def _on_year_month_changed(self, y: int, m: int) -> None:
         """年视图里换了月份 — 工具栏标签/计数跟上, 藏着的月视图也同步。
@@ -492,6 +577,42 @@ class PyCalMainWindow(FloatingWindow):
         self._update_month_label()
         self._update_count()
 
+    # ------------------------------------------------------------------
+    # 铺满屏幕 / 普通窗口
+    # ------------------------------------------------------------------
+    def toggle_maximized(self) -> None:
+        """在「铺满屏幕」和「普通窗口」之间切换。
+
+        不用系统的 showMaximized: 满屏的桌面日历还原回来还是满屏, 用户
+        就没法把窗口缩小成一块小挂历了。这里自己管状态, 还原时给一个
+        居中的普通窗口, 之后拖边就能自由缩放。
+        """
+        if self._full:
+            self._full = False
+            if self._normal_rect is not None:
+                self.setGeometry(self._normal_rect)
+            else:
+                scr = QApplication.primaryScreen().availableGeometry()
+                w = min(1100, scr.width() - 80)
+                h = min(760, scr.height() - 80)
+                self.setGeometry(
+                    scr.x() + (scr.width() - w) // 2,
+                    scr.y() + (scr.height() - h) // 2, w, h,
+                )
+        else:
+            self._normal_rect = self.geometry()
+            self._full = True
+            scr = QApplication.primaryScreen().geometry()
+            self.setGeometry(scr)
+        self.showNormal()
+        self._apply_toolbar_compact()
+
+    def _hit_test_edge(self, pos):
+        """铺满屏幕时不能拖边缩放 — 那是屏幕边缘, 不是窗口边缘。"""
+        if getattr(self, "_full", False):
+            return None
+        return super()._hit_test_edge(pos)
+
     def goto_today(self) -> None:
         if self._is_year_view():
             today = date.today()
@@ -515,7 +636,11 @@ class PyCalMainWindow(FloatingWindow):
         y, m = self._current_view().current_month()
         # 年视图下 ◀ ▶ 走的是详情里的月 — 标签跟着动, 按了才有反馈。
         # 「现在是年视图」由那个高亮的切换按钮 + 年视图自己的标题说明。
-        self._month_label.setText(f"{y} 年 {m:02d} 月")
+        if getattr(self, "_compact", False):
+            # 窄窗口里 "2026 年 10 月" 要 209px, 标签只有 120 多 → 用短写法
+            self._month_label.setText(f"{y % 100:02d}年{m:02d}月")
+        else:
+            self._month_label.setText(f"{y} 年 {m:02d} 月")
 
     def _update_count(self):
         try:
@@ -563,9 +688,7 @@ class PyCalMainWindow(FloatingWindow):
         if yv is not None:
             yv.apply_skin(self._skin.name)
         # 工具栏按钮同理 — 各自有内联 QSS, 换皮肤得逐个重刷
-        for btn, (accent, danger) in getattr(self, "_tool_meta", {}).items():
-            btn.setStyleSheet(_tool_qss(self._skin, accent=accent, danger=danger,
-                                        fonts=self._fonts))
+        self._restyle_tools()
 
     def _apply_fonts(self) -> None:
         """把当前字号比例落到整个主窗。
@@ -574,9 +697,8 @@ class PyCalMainWindow(FloatingWindow):
         所以月视图得单独推一遍 (和换皮肤走的是两套路径)。
         """
         self.setStyleSheet(stylesheet_for(self._skin, self._fonts))
-        for btn, (accent, danger) in getattr(self, "_tool_meta", {}).items():
-            btn.setStyleSheet(_tool_qss(self._skin, accent=accent, danger=danger,
-                                        fonts=self._fonts))
+        self._restyle_tools()
+        self._style_month_label()
         bar = getattr(self, "_top_bar", None)
         if bar is not None:
             bar.setFixedHeight(self._fonts.bar_h)
@@ -1044,11 +1166,14 @@ def _db_location() -> str:
 
 
 def _tool_qss(skin: Skin, danger: bool = False, accent: bool = False,
-              fonts: Optional[Fonts] = None) -> str:
+              fonts: Optional[Fonts] = None, compact: bool = False) -> str:
     """工具栏按钮的 QSS。
 
     普通按钮跟着皮肤走 (深色皮肤下不再是一排白药丸); accent/danger 是
     固定的强调色, 两种皮肤下都读得清。字号由 fonts 决定。
+
+    compact=True 是窗口窄了之后的版本: 只留图标, 边距也收紧 ——
+    不然 12 个按钮光最小宽度就 684px, 窗口缩不下去。
     """
     f = fonts or fonts_for()
     if danger:
@@ -1062,9 +1187,11 @@ def _tool_qss(skin: Skin, danger: bool = False, accent: bool = False,
         hover, pressed, border = skin.btn_hover, skin.btn_pressed, skin.btn_border
 
     fg_rule = f"color: {fg};" if fg else ""
+    pad = "2px 4px" if compact else "4px 8px"
+    radius = 3 if compact else 4
     return (
-        f"QToolButton {{ border: 1px solid {border}; border-radius: 4px;"
-        f" background: {normal}; {fg_rule} padding: 4px 8px;"
+        f"QToolButton {{ border: 1px solid {border}; border-radius: {radius}px;"
+        f" background: {normal}; {fg_rule} padding: {pad};"
         f" font-size: {f.toolbar}pt; }}"
         f"QToolButton:hover {{ background: {hover}; border-color: #4A90E2; }}"
         f"QToolButton:pressed {{ background: {pressed}; }}"

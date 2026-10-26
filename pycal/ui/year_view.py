@@ -72,10 +72,17 @@ class MiniMonth(QWidget):
 
     # ------------------------------------------------------------------
     def _build_days(self) -> list[date]:
-        """6 行 × 7 列 = 42 天, 从当月 1 号所在那周的星期一开始。"""
+        """这个月占到的那些天 — 从当月 1 号所在那周的星期一开始。
+
+        只留本月真正占到的周 (5 或 6 周): 整行都属于下个月的那行不画,
+        跟月视图一个规矩。
+        """
+        from calendar import monthrange
         first = date(self.year, self.month, 1)
         start = first - timedelta(days=first.weekday())   # weekday(): Mon=0
-        return [start + timedelta(days=i) for i in range(42)]
+        days_in_month = monthrange(self.year, self.month)[1]
+        self._rows = (first.weekday() + days_in_month + 6) // 7
+        return [start + timedelta(days=i) for i in range(self._rows * 7)]
 
     def _geometry(self) -> tuple[QRect, int, int, int, int]:
         """(整块矩形, 标题行高, 表头行高, 格宽, 格高) — 画和点击共用一套。"""
@@ -83,7 +90,7 @@ class MiniMonth(QWidget):
         title_h = self._fonts.mini_title_h
         head_h = self._fonts.mini_head_h
         cell_w = max(1, r.width() // 7)
-        cell_h = max(1, (r.height() - title_h - head_h) // 6)
+        cell_h = max(1, (r.height() - title_h - head_h) // max(1, self._rows))
         return r, title_h, head_h, cell_w, cell_h
 
     def _font(self, pt: int, bold: bool = False) -> QFont:
@@ -145,8 +152,9 @@ class MiniMonth(QWidget):
                 p.drawRoundedRect(cell.adjusted(1, 1, -1, -1), 3, 3)
 
             if not in_month:
-                fg = c.muted_fg
-            elif cnt:
+                # 不是本月的日子 → 不画数字 (「以月为单位」)
+                continue
+            if cnt:
                 fg = _ITEM_FG
             elif d.weekday() >= 5:
                 fg = _WEEKEND_FG
@@ -178,7 +186,7 @@ class MiniMonth(QWidget):
             return None
         col = (pos.x() - r.left()) // cell_w
         row = (pos.y() - days_top) // cell_h
-        if not (0 <= col < 7 and 0 <= row < 6):
+        if not (0 <= col < 7 and 0 <= row < self._rows):
             return None
         idx = row * 7 + col
         return idx, self._days[idx]

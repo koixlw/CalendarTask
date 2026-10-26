@@ -15,6 +15,7 @@ import tempfile
 import traceback
 from datetime import date
 from pathlib import Path
+from calendar import monthrange
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -88,8 +89,14 @@ def main() -> int:
     mm = MiniMonth(2026, 10)
     mm.resize(340, 96)
 
-    check("一个月是 42 天 (6 行 × 7 列)", lambda: _assert(
-        len(mm._days) == 42, f"实际 {len(mm._days)} 天",
+    check("小月只画本月占到的周 (10 月 = 5 周 = 35 天)", lambda: _assert(
+        len(mm._days) == 35 and mm._rows == 5,
+        f"{len(mm._days)} 天 / {mm._rows} 行",
+    ))
+
+    check("小月里的日子一天不缺", lambda: _assert(
+        {d.day for d in mm._days if d.month == 10} == set(range(1, 32)),
+        sorted({d.day for d in mm._days if d.month == 10}),
     ))
 
     check("第一天是星期一", lambda: _assert(
@@ -132,6 +139,25 @@ def main() -> int:
         mm.year == 2026 and mm.month == 10, (mm.year, mm.month),
     ))
 
+    # 「以月为单位」— 每个月只画它自己占到的周, 不带整行的下个月
+    bad = []
+    for year in (2026, 2027):
+        for mo in range(1, 13):
+            m = MiniMonth(year, mo)
+            days_in_month = monthrange(year, mo)[1]
+            want_rows = (date(year, mo, 1).weekday() + days_in_month + 6) // 7
+            own = {d.day for d in m._days if d.month == mo}
+            last_row = m._days[-7:]
+            if m._rows != want_rows:
+                bad.append(f"{year}-{mo:02d} 行数 {m._rows} != {want_rows}")
+            if own != set(range(1, days_in_month + 1)):
+                bad.append(f"{year}-{mo:02d} 缺日子")
+            if not any(d.month == mo for d in last_row):
+                bad.append(f"{year}-{mo:02d} 最后一行整行都是别的月")
+    check("12 个月 × 2 年: 只画本月占到的周, 一天不缺", lambda: _assert(
+        not bad, "; ".join(bad[:5]),
+    ))
+
     # ------------------------------------------------------------------
     print("\n=== 2. YearView ===")
 
@@ -153,8 +179,10 @@ def main() -> int:
         [m.year for m in yv._minis],
     ))
 
-    check("下方详情是月视图 (42 格)", lambda: _assert(
-        len(yv.detail_view._cells) == 42, len(yv.detail_view._cells),
+    check("下方详情是月视图 (格数随月份变)", lambda: _assert(
+        len(yv.detail_view._cells) % 7 == 0
+        and len(yv.detail_view._cells) in (28, 35, 42),
+        len(yv.detail_view._cells),
     ))
 
     yv.goto(2026, 10)
