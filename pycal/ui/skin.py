@@ -1,5 +1,7 @@
 """皮肤系统 — 主题切换 + 不透明度 + 字体缩放。
 
+字号不在这里定 — 由 pycal.ui.fonts 按用户的缩放比例算好传进来。
+
 内置 4 种皮肤:
   - light_default   透明白底, 蓝点缀
   - warm_paper      浅米黄, 棕点缀
@@ -21,6 +23,9 @@
 
 from __future__ import annotations
 from dataclasses import dataclass
+from typing import Optional
+
+from pycal.ui.fonts import Fonts, fonts_for
 
 
 @dataclass
@@ -98,8 +103,12 @@ def current_skin(name: str = "light_default") -> Skin:
     return SKINS.get(name, SKINS["light_default"])
 
 
-def stylesheet_for(skin: Skin) -> str:
-    """生成主窗 QSS — 用于 setStyleSheet。"""
+def stylesheet_for(skin: Skin, fonts: Optional[Fonts] = None) -> str:
+    """生成主窗 QSS — 用于 setStyleSheet。
+
+    fonts 不传就是标准字号, 这样单独调皮肤的老调用方不用改。
+    """
+    f = fonts or fonts_for()
     return f"""
         QMainWindow {{
             background: {skin.window_bg};
@@ -111,7 +120,7 @@ def stylesheet_for(skin: Skin) -> str:
         QLabel[role="title"] {{
             color: {skin.title_fg};
             font-weight: bold;
-            font-size: 12pt;
+            font-size: {f.title}pt;
         }}
         QToolButton {{
             border: 1px solid {skin.btn_border};
@@ -119,6 +128,7 @@ def stylesheet_for(skin: Skin) -> str:
             background: {skin.btn_bg};
             color: {skin.btn_fg};
             padding: 4px 8px;
+            font-size: {f.toolbar}pt;
             font-weight: normal;
         }}
         QToolButton:hover {{
@@ -129,15 +139,17 @@ def stylesheet_for(skin: Skin) -> str:
             background: {skin.btn_pressed};
         }}
         QLabel[role="month_label"] {{
-            font-size: 14pt;
+            font-size: {f.month}pt;
             font-weight: bold;
             color: {skin.title_fg};
         }}
         QStatusBar {{
             color: {skin.status_fg};
+            font-size: {f.status}pt;
         }}
         QStatusBar > QLabel {{
             color: {skin.status_fg};
+            font-size: {f.status}pt;
         }}
     """
 

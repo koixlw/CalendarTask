@@ -33,6 +33,7 @@ from pycal.db.connection import open_default
 from pycal.db.repository import list_items_in_range, upsert_item, get_item
 from pycal.db.models import CalendarItem
 from pycal.ui.color_picker import color_to_hex
+from pycal.ui.fonts import Fonts, DEFAULT_SCALE, fonts_for
 
 
 # ============================================================================
@@ -144,18 +145,20 @@ class LineRow(QWidget):
     sig_toggled = Signal(str, object, bool)   # (item_id, line_idx|None, 新状态)
     sig_open = Signal(str, object)            # (item_id, line_idx|None)
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: Optional[QWidget] = None,
+                 fonts: Optional[Fonts] = None):
         super().__init__(parent)
         self._lay = QHBoxLayout(self)
         self._lay.setContentsMargins(0, 0, 0, 0)
         self._lay.setSpacing(3)
 
+        self._fonts = fonts or fonts_for()
         self._font = QFont()
-        self._font.setPointSize(8)
+        self._font.setPointSize(self._fonts.row)
 
         self._box = QLabel("☐")
         self._box.setFont(self._font)
-        self._box.setFixedWidth(13)
+        self._box.setFixedWidth(self._fonts.box_w)
         self._box.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self._text = QLabel("")
@@ -166,7 +169,8 @@ class LineRow(QWidget):
 
         self._lay.addWidget(self._box, 0)
         self._lay.addWidget(self._text, 1)
-        self.setFixedHeight(15)
+        # 行高跟着字号走 — 只放大字不放开高, 字会被裁掉
+        self.setFixedHeight(self._fonts.row_h)
 
         self._item_id = ""
         self._line_idx: Optional[int] = None
@@ -177,6 +181,15 @@ class LineRow(QWidget):
 
         self._box.setCursor(Qt.CursorShape.PointingHandCursor)
         self._box.setToolTip("单击打勾")
+
+    def apply_fonts(self, fonts: Fonts) -> None:
+        """换字号 — 行高 / ☐ 宽度 / 截断宽度都要跟着重算。"""
+        self._fonts = fonts
+        self._font.setPointSize(fonts.row)
+        self._box.setFont(self._font)
+        self._box.setFixedWidth(fonts.box_w)
+        self.setFixedHeight(fonts.row_h)
+        self._render()
 
     # ------------------------------------------------------------------
     def bind(self, item_id: str, text: str, done: bool,
@@ -243,8 +256,6 @@ class LineRow(QWidget):
 class DayCell(QFrame):
     """单日格 widget — 显示日期号、类型标记、内容行 (每行可勾选)。"""
 
-    MAX_ROWS = 5        # 一格最多显示几条, 剩下的折成 "+N 更多"
-
     sig_single_click = Signal(str)         # day_iso (左键单击空白处)
     sig_double_click = Signal(str)         # day_iso (左键双击 — 编辑/新建)
     sig_right_click = Signal(str)          # day_iso (右键 — 弹出菜单)
@@ -259,6 +270,7 @@ class DayCell(QFrame):
         is_today: bool = False,
         is_weekend: bool = False,
         colors: Optional[CellColors] = None,
+        fonts: Optional[Fonts] = None,
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
@@ -272,11 +284,12 @@ class DayCell(QFrame):
         self.is_weekend = is_weekend
         self._items: list[CalendarItem] = []
         self._colors = colors or CellColors()
+        self._fonts = fonts or fonts_for()
         self._hovered = False
         self._rows: list[LineRow] = []
 
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setMinimumSize(110, 80)
+        self.setMinimumSize(self._fonts.cell_min_w, self._fonts.cell_min_h)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._build()
@@ -309,24 +322,14 @@ class DayCell(QFrame):
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         self._num_lbl = QLabel(str(self.day_num))
-        font = QFont()
-        font.setBold(self.is_today)
-        font.setPointSize(11 if self.is_today else 10)
-        self._num_lbl.setFont(font)
         top.addWidget(self._num_lbl)
 
         # 节假日/lunar 副标题
         self._sub_lbl = QLabel("")
-        sub_font = QFont()
-        sub_font.setPointSize(7)
-        sub_font.setItalic(True)
-        self._sub_lbl.setFont(sub_font)
-        self._sub_lbl.setStyleSheet("color: #888;")
         top.addWidget(self._sub_lbl)
 
         top.addStretch()
         self._type_lbl = QLabel("")
-        self._type_lbl.setStyleSheet("font-size: 11pt;")
         top.addWidget(self._type_lbl)
         self._lay.addLayout(top)
 
@@ -338,10 +341,33 @@ class DayCell(QFrame):
 
         # "+N 更多"
         self._more_lbl = QLabel("")
-        self._more_lbl.setStyleSheet(f"color: {self._colors.sub_fg};")
-        self._more_lbl.setFont(QFont("", 7))
         self._more_lbl.setVisible(False)
         self._lay.addWidget(self._more_lbl)
+
+        self._apply_fonts()
+
+    # ------------------------------------------------------------------
+    def _apply_fonts(self) -> None:
+        """把 self._fonts 落到各个标签上 — 日期号粗细跟着 is_today 走。"""
+        f = self._fonts
+        num_font = QFont()
+        num_font.setBold(self.is_today)
+        num_font.setPointSize(f.num_today if self.is_today else f.num)
+        self._num_lbl.setFont(num_font)
+
+        # 副标题 / "+N 更多" 的字号和颜色都写在 _refresh_bg 的 QSS 里, 那边
+        # QSS 一旦带了 font-size 就会盖掉 QFont, 所以只让它一处说了算。
+        self._type_lbl.setStyleSheet(f"font-size: {f.type_icon}pt;")
+        for row in self._rows:
+            row.apply_fonts(f)
+        self._refresh_bg()
+
+    def apply_fonts(self, fonts: Fonts) -> None:
+        """外部调字号 — 字号大了, 每格能显示的条数也跟着变少。"""
+        self._fonts = fonts
+        self.setMinimumSize(fonts.cell_min_w, fonts.cell_min_h)
+        self._apply_fonts()
+        self._refresh()
 
     # ------------------------------------------------------------------
     # 公共
@@ -382,9 +408,12 @@ class DayCell(QFrame):
         )
         self._num_lbl.setStyleSheet(f"color: {fg};")
         self._sub_lbl.setStyleSheet(
-            f"color: {c.sub_fg}; font-style: italic; font-size: 7pt;"
+            f"color: {c.sub_fg}; font-style: italic;"
+            f" font-size: {self._fonts.sub}pt;"
         )
-        self._more_lbl.setStyleSheet(f"color: {c.sub_fg}; font-size: 7pt;")
+        self._more_lbl.setStyleSheet(
+            f"color: {c.sub_fg}; font-size: {self._fonts.more}pt;"
+        )
 
     # ------------------------------------------------------------------
     def _rows_for_display(self) -> list[tuple[CalendarItem, str, bool, Optional[int]]]:
@@ -418,11 +447,13 @@ class DayCell(QFrame):
         )
 
         rows = self._rows_for_display()
-        shown, overflow = rows[:self.MAX_ROWS], len(rows) - self.MAX_ROWS
+        # 字号越大, 一格塞得下的条数越少 — fonts_for 已经算好
+        cap = self._fonts.max_rows
+        shown, overflow = rows[:cap], len(rows) - cap
 
-        # 复用已有的 LineRow — 避免每次刷新重建 42×5 个控件
+        # 复用已有的 LineRow — 避免每次刷新重建 42×max_rows 个控件
         while len(self._rows) < len(shown):
-            row = LineRow(self)
+            row = LineRow(self, fonts=self._fonts)
             row.sig_toggled.connect(self._on_row_toggled)
             row.sig_open.connect(self._on_row_open)
             self._rows_lay.addWidget(row)
@@ -489,13 +520,19 @@ class MonthView(QWidget):
     sig_data_changed = Signal()            # 勾选/增删后 — 主窗据此刷新计数
 
     def __init__(self, parent: Optional[QWidget] = None,
-                 skin_name: str = "light_default"):
+                 skin_name: str = "light_default",
+                 font_scale: float = DEFAULT_SCALE,
+                 fonts: Optional[Fonts] = None):
         super().__init__(parent)
         self._cur = date.today().replace(day=1)
         self._grid = QGridLayout(self)
         self._grid.setSpacing(2)
         self._cells: dict[str, DayCell] = {}
+        self._header_lbls: list[QLabel] = []
         self._colors = colors_for_skin(skin_name)
+        # fonts 直接传进来的, 就别再按比例重算 — 年视图里详情那块要塞得下,
+        # 用的就是一份改过格子高度的字号表
+        self._fonts = fonts or fonts_for(font_scale)
 
         # 双击直接进编辑 (默认双击编辑该日第一条或新建)
         self.sig_edit_day.connect(self._handle_double_click)
@@ -506,20 +543,34 @@ class MonthView(QWidget):
         self._render()
 
     # ------------------------------------------------------------------
-    # 皮肤
+    # 皮肤 / 字号
     # ------------------------------------------------------------------
+    def _style_headers(self) -> None:
+        """星期表头的颜色 + 字号 — QSS 里带 font-size, 会盖掉 QFont。"""
+        qss = (
+            f"font-weight: bold; color: {self._colors.header_fg};"
+            f" font-size: {self._fonts.row}pt; padding: 2px;"
+        )
+        for lbl in self._header_lbls:
+            lbl.setStyleSheet(qss)
+
     def apply_skin(self, skin_name: str) -> None:
         """换皮肤时把新配色推给所有格子 (含星期表头)。"""
         self._colors = colors_for_skin(skin_name)
-        for col in range(len(_HEADERS)):
-            item = self._grid.itemAtPosition(0, col)
-            if item is not None and item.widget() is not None:
-                item.widget().setStyleSheet(
-                    f"font-weight: bold; color: {self._colors.header_fg};"
-                    " padding: 2px;"
-                )
+        self._style_headers()
         for cell in self._cells.values():
             cell.set_palette(self._colors)
+
+    def apply_font_scale(self, scale: float) -> None:
+        """调字号 — 传比例即可, 具体的 pt / 行高由 fonts_for 算。"""
+        self.apply_fonts(fonts_for(scale))
+
+    def apply_fonts(self, fonts: Fonts) -> None:
+        """直接用一份算好的字号表 — 年视图里详情那块用压缩过的格子高度。"""
+        self._fonts = fonts
+        self._style_headers()
+        for cell in self._cells.values():
+            cell.apply_fonts(self._fonts)
 
     # ------------------------------------------------------------------
     # Public
@@ -574,15 +625,15 @@ class MonthView(QWidget):
             if w is not None:
                 w.deleteLater()
         self._cells.clear()
+        self._header_lbls.clear()
 
         # 星期标题 (一~日)
         for col, h in enumerate(_HEADERS):
             lbl = QLabel(h)
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setStyleSheet(
-                f"font-weight: bold; color: {self._colors.header_fg}; padding: 2px;"
-            )
             self._grid.addWidget(lbl, 0, col)
+            self._header_lbls.append(lbl)
+        self._style_headers()
 
         first_weekday = self._cur.weekday()  # 0=Mon
         start = self._cur - timedelta(days=first_weekday)
@@ -600,6 +651,7 @@ class MonthView(QWidget):
                     is_today=is_today,
                     is_weekend=is_weekend,
                     colors=self._colors,
+                    fonts=self._fonts,
                 )
                 cell.set_subtitle(self._subtitle_for(d))
                 cell.sig_double_click.connect(self.sig_edit_day)

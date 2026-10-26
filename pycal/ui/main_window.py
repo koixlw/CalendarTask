@@ -29,14 +29,19 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QGridLayout, QLabel,
     QVBoxLayout, QHBoxLayout, QPushButton, QFrame, QStatusBar,
     QMenu, QMessageBox, QToolButton, QSystemTrayIcon, QSlider,
-    QButtonGroup,
+    QButtonGroup, QScrollArea,
 )
 
 from pycal.db.connection import open_default
 from pycal.db.models import CalendarItem, RepeatRule, Reminder, Countdown
 from pycal.db.repository import upsert_item, list_items_by_date, get_item
 from pycal.ui.month_view import MonthView
+from pycal.ui.year_view import YearView
 from pycal.ui.skin import Skin, current_skin, stylesheet_for, SKINS
+from pycal.ui.fonts import (
+    SCALES, DEFAULT_SCALE, Fonts, fonts_for, label_for_scale,
+    scale_from_setting,
+)
 from pycal.ui.floating_window import FloatingWindow
 
 
@@ -119,6 +124,17 @@ class PyCalMainWindow(FloatingWindow):
         )
         self._topmost: bool = _load_setting("topmost", "0") == "1"
         self._opacity: float = float(_load_setting("opacity", "1.0") or "1.0")
+        # 字号比例存在 settings 表 — 重启后还是用户调的那个大小
+        self._font_scale: float = scale_from_setting(
+            _load_setting("font_scale", str(DEFAULT_SCALE))
+        )
+        self._fonts: Fonts = fonts_for(self._font_scale)
+        # 当前显示的是月视图还是年视图 — 年视图下面还带一块月视图详情
+        self._view_mode = "month"
+        # 对话框 (编辑器 / 搜索 / 帮助) 用的都是系统默认字号, 这里记下基准值,
+        # 调字号时好按比例一起放大 — 不然大窗配小字会很割裂。
+        # 基准只取一次: 每次都拿当前值再乘会把字号滚雪球。
+        self._base_app_pt = app.font().pointSize() if app.font().pointSize() > 0 else 0
 
         self.setWindowTitle("PyCal")
         if fullscreen:
@@ -156,7 +172,7 @@ class PyCalMainWindow(FloatingWindow):
         # 工具栏
         bar = QFrame()
         bar.setObjectName("TopBar")
-        bar.setFixedHeight(36)
+        bar.setFixedHeight(self._fonts.bar_h)
         bar_layout = QHBoxLayout(bar)
         bar_layout.setContentsMargins(4, 0, 4, 0)
         bar_layout.setSpacing(4)
@@ -173,7 +189,11 @@ class PyCalMainWindow(FloatingWindow):
         self._month_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._btn_next = _tool_btn("▶", self._skin)
         self._btn_today = _tool_btn("今天", self._skin)
-        for b in (self._btn_prev, self._month_label, self._btn_next, self._btn_today):
+        # 年/月视图切换 — 年视图是一屏 12 个小月, 下面是选中月的详情
+        self._btn_year = _tool_btn("📆 年视图", self._skin)
+        self._btn_year.setCheckable(True)
+        for b in (self._btn_prev, self._month_label, self._btn_next,
+                  self._btn_today, self._btn_year):
             bar_layout.addWidget(b)
         bar_layout.addSpacing(8)
 
@@ -195,7 +215,7 @@ class PyCalMainWindow(FloatingWindow):
         # (按钮, 是否 accent, 是否 danger) — 换皮肤时照这张表重刷
         self._tool_meta = {
             self._btn_prev: (False, False), self._btn_next: (False, False),
-            self._btn_today: (False, False),
+            self._btn_today: (False, False), self._btn_year: (False, False),
             self._btn_report: (True, False), self._btn_ai: (True, False),
             self._btn_search: (False, False), self._btn_more: (False, False),
             self._btn_help: (False, False),
@@ -217,13 +237,16 @@ class PyCalMainWindow(FloatingWindow):
 
         self._top_layout.addWidget(bar)
         # 把整个工具栏作为拖动区域
-        self.set_drag_area(bar, height=36)
+        self._top_bar = bar
+        self.set_drag_area(bar, height=self._fonts.bar_h)
 
         # 月视图 (放在一个 QStackedWidget 里方便做切换动画)
         from PySide6.QtWidgets import QStackedWidget
         self._stack = QStackedWidget()
-        self._month_left = MonthView(skin_name=self._skin.name)
-        self._month_right = MonthView(skin_name=self._skin.name)
+        self._month_left = MonthView(skin_name=self._skin.name,
+                                      font_scale=self._font_scale)
+        self._month_right = MonthView(skin_name=self._skin.name,
+                                       font_scale=self._font_scale)
         # 两层用于 slide-in / slide-out
         self._stack.addWidget(self._month_left)
         self._stack.addWidget(self._month_right)
@@ -234,7 +257,27 @@ class PyCalMainWindow(FloatingWindow):
         # 勾选/增删后刷新状态栏计数
         for mv in (self._month_left, self._month_right):
             mv.sig_data_changed.connect(self._update_count)
-        self._top_layout.addWidget(self._stack, 1)
+
+        # 年视图 — 另一层: 上面 12 个小月 (一~日), 下面是选中月的详情
+        self._year_view = YearView(skin_name=self._skin.name,
+                                   font_scale=self._font_scale)
+        self._year_view.sig_data_changed.connect(self._update_count)
+        self._year_view.sig_month_changed.connect(self._on_year_month_changed)
+        # 套一层滚动区 — 屏太矮时 (1366×768) 年视图放不下, 至少能滚,
+        # 不会被布局硬撑出屏幕外
+        self._year_scroll = QScrollArea()
+        self._year_scroll.setWidgetResizable(True)
+        self._year_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._year_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._year_scroll.setWidget(self._year_view)
+
+        # 外层栈: 0 = 月视图, 1 = 年视图
+        self._view_stack = QStackedWidget()
+        self._view_stack.addWidget(self._stack)
+        self._view_stack.addWidget(self._year_scroll)
+        self._view_stack.setCurrentIndex(0)
+        self._top_layout.addWidget(self._view_stack, 1)
 
         # 状态栏
         status = QStatusBar()
@@ -253,6 +296,7 @@ class PyCalMainWindow(FloatingWindow):
         self._btn_prev.clicked.connect(lambda: self.shift_month(-1))
         self._btn_next.clicked.connect(lambda: self.shift_month(+1))
         self._btn_today.clicked.connect(self.goto_today)
+        self._btn_year.clicked.connect(self._toggle_year_view)
         self._btn_report.clicked.connect(self._open_report)
         self._btn_ai.clicked.connect(self._open_ai)
         self._btn_search.clicked.connect(self._open_search)
@@ -269,6 +313,8 @@ class PyCalMainWindow(FloatingWindow):
         self._update_count()
         self._apply_topmost()
         self._apply_opacity()
+        # 工具栏按钮建的时候用的是默认字号, 这里按存的缩放比例补刷一遍
+        self._apply_fonts()
         # 动画开关的初始状态 — 状态栏文案也要跟着设置走, 别写死「开」
         anim_on = _load_setting("anim", "1") == "1"
         self._anim_label.setText(f"动画 {'开' if anim_on else '关'}")
@@ -278,6 +324,9 @@ class PyCalMainWindow(FloatingWindow):
             (self._btn_prev, "上一月"),
             (self._btn_next, "下一月"),
             (self._btn_today, "回到今天"),
+            (self._btn_year, "切换到年视图 / 回到月视图\n"
+                             "年视图: 一屏 12 个月的小格子 (周一~周日), "
+                             "下面是选中月的详情"),
             (self._btn_report, "生成日报 / 周报\n预览、复制、导出 MD / HTML / PDF"),
             (self._btn_ai, "用 Claude 把日报 / 周报改写得更通顺\n(需要 ANTHROPIC_API_KEY)"),
             (self._btn_search, "搜索全部条目\n快捷键 Ctrl+F"),
@@ -299,6 +348,7 @@ class PyCalMainWindow(FloatingWindow):
             ("F5", self.refresh_view),
             ("F1", self._open_help),
             ("Ctrl+S", self._open_sync),
+            ("Y", self._toggle_year_view_from_menu),
         ]:
             QShortcut(QKeySequence(key), self, activated=slot)
 
@@ -315,9 +365,73 @@ class PyCalMainWindow(FloatingWindow):
         QTimer.singleShot(60_000, self._auto_report_tick)   # 启动 1min 后首检
 
     # ------------------------------------------------------------------
+    # 月 / 年视图切换
+    # ------------------------------------------------------------------
+    def _is_year_view(self) -> bool:
+        return getattr(self, "_view_mode", "month") == "year"
+
+    def _current_view(self) -> MonthView:
+        """当前「说了算」的那块月视图 — 年视图模式下是下方详情。"""
+        if self._is_year_view():
+            return self._year_view.detail_view
+        return self._active_month_view
+
+    def _toggle_year_view(self, checked: bool = True) -> None:
+        """工具栏那个勾选按钮 — checked 是按钮自己的勾选状态。"""
+        self._set_view_mode("year" if checked else "month")
+
+    def _toggle_year_view_from_menu(self) -> None:
+        """「⋯ 更多」里那项 — 菜单没有勾选态, 就直接翻面。"""
+        self._set_view_mode("month" if self._is_year_view() else "year")
+
+    def _set_view_mode(self, mode: str) -> None:
+        if mode == self._view_mode:
+            return
+        self._view_mode = mode
+        if mode == "year":
+            y, m = self._active_month_view.current_month()
+            self._year_view.goto(y, m)
+            self._view_stack.setCurrentIndex(1)
+        else:
+            # 回到月视图 — 停在哪个月就停在哪个月
+            y, m = self._year_view.current_month()
+            self._active_month_view.goto(y, m)
+            self._idle_month_view.goto(y, m)
+            self._view_stack.setCurrentIndex(0)
+        self._sync_year_btn()
+        self._update_month_label()
+        self._update_count()
+
+    def _sync_year_btn(self) -> None:
+        """年视图按钮的勾选态 + 高亮 — 换皮肤后要重新 polish 才生效。"""
+        btn = getattr(self, "_btn_year", None)
+        if btn is None:
+            return
+        on = self._is_year_view()
+        btn.setChecked(on)
+        btn.setProperty("on", "true" if on else "false")
+        btn.style().unpolish(btn)
+        btn.style().polish(btn)
+
+    def _on_year_month_changed(self, y: int, m: int) -> None:
+        """年视图里换了月份 — 工具栏标签/计数跟上, 藏着的月视图也同步。
+
+        点小月、点日期、翻月都会走到这儿。回到月视图时正好停在这个月。
+        """
+        self._active_month_view.goto(y, m)
+        self._idle_month_view.goto(y, m)
+        self._update_month_label()
+        self._update_count()
+
+    # ------------------------------------------------------------------
     # 月份切换 — 带动画
     # ------------------------------------------------------------------
     def shift_month(self, delta: int) -> None:
+        if self._is_year_view():
+            # 年视图下 ◀ ▶ 走的是详情里的月, 跨年就跟着换年。
+            # 换月会触发 sig_month_changed — 标签/计数/藏着的月视图那边自己跟上
+            self._year_view.shift_month(delta)
+            return
         y, m = self._active_month_view.current_month()
         m += delta
         while m < 1:
@@ -379,26 +493,41 @@ class PyCalMainWindow(FloatingWindow):
         self._update_count()
 
     def goto_today(self) -> None:
-        self._active_month_view.goto_today()
-        self._idle_month_view.goto_today()    # 保持同步
+        if self._is_year_view():
+            today = date.today()
+            self._year_view.goto(today.year, today.month)
+        else:
+            self._active_month_view.goto_today()
+            self._idle_month_view.goto_today()    # 保持同步
         self._update_month_label()
         self._update_count()
 
     def refresh_view(self) -> None:
         self._active_month_view.refresh()
+        if getattr(self, "_year_view", None) is not None:
+            self._year_view.refresh()
         self._update_count()
 
     # ------------------------------------------------------------------
     # 标签/计数
     # ------------------------------------------------------------------
     def _update_month_label(self):
-        y, m = self._active_month_view.current_month()
+        y, m = self._current_view().current_month()
+        # 年视图下 ◀ ▶ 走的是详情里的月 — 标签跟着动, 按了才有反馈。
+        # 「现在是年视图」由那个高亮的切换按钮 + 年视图自己的标题说明。
         self._month_label.setText(f"{y} 年 {m:02d} 月")
 
     def _update_count(self):
         try:
             con = open_default()
-            y, m = self._active_month_view.current_month()
+            y, m = self._current_view().current_month()
+            if self._is_year_view():
+                rows = con.execute(
+                    "SELECT COUNT(*) FROM calendar_items WHERE date BETWEEN ? AND ?",
+                    (f"{y:04d}-01-01", f"{y:04d}-12-31"),
+                ).fetchone()[0]
+                self._count_label.setText(f"{y} 年  共 {rows} 项")
+                return
             from calendar import monthrange
             days = monthrange(y, m)[1]
             start = f"{y:04d}-{m:02d}-01"
@@ -412,24 +541,70 @@ class PyCalMainWindow(FloatingWindow):
             self._count_label.setText("(数据加载失败)")
 
     # ------------------------------------------------------------------
-    # 皮肤 / 不透明度 / 置顶 / 动画开关
+    # 皮肤 / 不透明度 / 置顶 / 动画开关 / 字号
     # ------------------------------------------------------------------
     def _apply_skin(self) -> None:
-        self.setStyleSheet(stylesheet_for(self._skin))
+        self.setStyleSheet(stylesheet_for(self._skin, self._fonts))
         # 状态栏用单独样式
         if hasattr(self, "_status_bar") and self._status_bar is not None:
             self._status_bar.setStyleSheet(
-                f"QStatusBar {{ color: {self._skin.status_fg}; }}"
-                f"QStatusBar > QLabel {{ color: {self._skin.status_fg}; }}"
+                f"QStatusBar {{ color: {self._skin.status_fg};"
+                f" font-size: {self._fonts.status}pt; }}"
+                f"QStatusBar > QLabel {{ color: {self._skin.status_fg};"
+                f" font-size: {self._fonts.status}pt; }}"
             )
         # 月视图的格子配色是内联样式, 不会跟着主窗 QSS 走 — 得手动推
         for mv in (getattr(self, "_month_left", None),
                    getattr(self, "_month_right", None)):
             if mv is not None:
                 mv.apply_skin(self._skin.name)
+        # 年视图同理 — 小月和下面那块详情都得重刷
+        yv = getattr(self, "_year_view", None)
+        if yv is not None:
+            yv.apply_skin(self._skin.name)
         # 工具栏按钮同理 — 各自有内联 QSS, 换皮肤得逐个重刷
         for btn, (accent, danger) in getattr(self, "_tool_meta", {}).items():
-            btn.setStyleSheet(_tool_qss(self._skin, accent=accent, danger=danger))
+            btn.setStyleSheet(_tool_qss(self._skin, accent=accent, danger=danger,
+                                        fonts=self._fonts))
+
+    def _apply_fonts(self) -> None:
+        """把当前字号比例落到整个主窗。
+
+        字号不只是 QSS: 格子里的行高 / ☐ 宽度 / 每格能显示几条都是跟着走的,
+        所以月视图得单独推一遍 (和换皮肤走的是两套路径)。
+        """
+        self.setStyleSheet(stylesheet_for(self._skin, self._fonts))
+        for btn, (accent, danger) in getattr(self, "_tool_meta", {}).items():
+            btn.setStyleSheet(_tool_qss(self._skin, accent=accent, danger=danger,
+                                        fonts=self._fonts))
+        bar = getattr(self, "_top_bar", None)
+        if bar is not None:
+            bar.setFixedHeight(self._fonts.bar_h)
+            self.set_drag_area(bar, height=self._fonts.bar_h)
+        status = getattr(self, "_status_bar", None)
+        if status is not None:
+            status.setStyleSheet(
+                f"QStatusBar {{ color: {self._skin.status_fg};"
+                f" font-size: {self._fonts.status}pt; }}"
+                f"QStatusBar > QLabel {{ color: {self._skin.status_fg};"
+                f" font-size: {self._fonts.status}pt; }}"
+            )
+        for mv in (getattr(self, "_month_left", None),
+                   getattr(self, "_month_right", None)):
+            if mv is not None:
+                mv.apply_font_scale(self._font_scale)
+        yv = getattr(self, "_year_view", None)
+        if yv is not None:
+            yv.apply_font_scale(self._font_scale)
+        # 工具栏按钮重刷了样式, 年视图按钮的高亮要重新 polish 才认
+        self._sync_year_btn()
+        # 顺带把对话框那些「没写死字号」的控件也带上一遍
+        if self._base_app_pt > 0:
+            app_font = self._app.font()
+            app_font.setPointSize(
+                max(7, int(round(self._base_app_pt * self._font_scale)))
+            )
+            self._app.setFont(app_font)
 
     # ------------------------------------------------------------------
     # 「⋯ 更多」菜单 — 低频功能全在这儿, 每项都带中文名 + 一句话说明
@@ -453,6 +628,8 @@ class PyCalMainWindow(FloatingWindow):
             return act
 
         section("常用")
+        item("年视图 / 月视图", "一屏看全年 12 个月, 下面是选中月的详情",
+             self._toggle_year_view_from_menu, "Y")
         item("搜索全部条目…", "在所有日期的所有条目里找关键词",
              self._open_search, "Ctrl+F")
         item("生成日报 / 周报…", "预览、复制, 或导出成 MD / HTML / PDF",
@@ -471,6 +648,7 @@ class PyCalMainWindow(FloatingWindow):
 
         section("外观")
         menu.addMenu(self._build_skin_menu())
+        menu.addMenu(self._build_font_menu())
         top_act = item("窗口置顶", "让 PyCal 始终浮在其它窗口之上",
                        self._toggle_topmost)
         top_act.setCheckable(True)
@@ -527,6 +705,57 @@ class PyCalMainWindow(FloatingWindow):
                 lambda _=False, p=pct: self._set_opacity(p / 100)
             )
         return skin_menu
+
+    def _build_font_menu(self) -> QMenu:
+        """字体大小 — 整个主窗 (工具栏 / 月视图 / 状态栏) 一起缩。"""
+        font_menu = QMenu("字体大小", self)
+        font_menu.setToolTipsVisible(True)
+
+        step = font_menu.addMenu("放大 / 缩小一档")
+        step.addAction("A+ 放大一点").triggered.connect(
+            lambda: self._step_font_scale(+0.05))
+        step.addAction("A− 缩小一点").triggered.connect(
+            lambda: self._step_font_scale(-0.05))
+        step.addSeparator()
+        # 微调到档位之间时下面的预设就都没勾了 — 这里显示当前值, 免得
+        # 用户连点几下之后不知道自己在第几档
+        self._font_scale_hint = step.addAction(label_for_scale(self._font_scale))
+        self._font_scale_hint.setEnabled(False)
+
+        font_menu.addSeparator()
+        # 勾选态要能原地更新 —— 用户正开着菜单连点 A+ 时重建菜单会把手
+        # 里的子菜单一起销毁, 菜单当场就没了。所以留一份 action 引用。
+        self._font_scale_actions = {}
+        for value, label in SCALES:
+            act = font_menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(abs(self._font_scale - value) < 0.005)
+            act.setToolTip("主窗各处字号一起放大或缩小")
+            act.triggered.connect(lambda _=False, v=value: self._set_font_scale(v))
+            self._font_scale_actions[value] = act
+
+        font_menu.addSeparator()
+        font_menu.addAction(
+            f"恢复默认 ({label_for_scale(DEFAULT_SCALE)})"
+        ).triggered.connect(lambda: self._set_font_scale(DEFAULT_SCALE))
+        return font_menu
+
+    # ------------------------------------------------------------------
+    def _set_font_scale(self, scale: float) -> None:
+        self._font_scale = scale_from_setting(scale)
+        self._fonts = fonts_for(self._font_scale)
+        _save_setting("font_scale", str(self._font_scale))
+        self._apply_fonts()
+        # 菜单不重建, 只更新勾选 — 菜单还开着, 用户可以接着连点
+        for value, act in getattr(self, "_font_scale_actions", {}).items():
+            act.setChecked(abs(self._font_scale - value) < 0.005)
+        hint = getattr(self, "_font_scale_hint", None)
+        if hint is not None:
+            hint.setText(label_for_scale(self._font_scale))
+
+    def _step_font_scale(self, delta: float) -> None:
+        """按档微调 — 菜单打开着就能连点, 每点一次立刻见效。"""
+        self._set_font_scale(round(self._font_scale + delta, 2))
 
     def _open_help(self) -> None:
         from pycal.ui.help_dialog import HelpDialog
@@ -814,12 +1043,14 @@ def _db_location() -> str:
         return "(未知)"
 
 
-def _tool_qss(skin: Skin, danger: bool = False, accent: bool = False) -> str:
+def _tool_qss(skin: Skin, danger: bool = False, accent: bool = False,
+              fonts: Optional[Fonts] = None) -> str:
     """工具栏按钮的 QSS。
 
     普通按钮跟着皮肤走 (深色皮肤下不再是一排白药丸); accent/danger 是
-    固定的强调色, 两种皮肤下都读得清。
+    固定的强调色, 两种皮肤下都读得清。字号由 fonts 决定。
     """
+    f = fonts or fonts_for()
     if danger:
         normal, fg = "#FFE5E5", "#C0392B"
         hover, pressed, border = "#FFD5D5", "#FFC0C0", "#E8A0A0"
@@ -833,7 +1064,8 @@ def _tool_qss(skin: Skin, danger: bool = False, accent: bool = False) -> str:
     fg_rule = f"color: {fg};" if fg else ""
     return (
         f"QToolButton {{ border: 1px solid {border}; border-radius: 4px;"
-        f" background: {normal}; {fg_rule} padding: 4px 8px; }}"
+        f" background: {normal}; {fg_rule} padding: 4px 8px;"
+        f" font-size: {f.toolbar}pt; }}"
         f"QToolButton:hover {{ background: {hover}; border-color: #4A90E2; }}"
         f"QToolButton:pressed {{ background: {pressed}; }}"
         # 开关型按钮 (置顶/动画) 的选中态 — 由 setProperty("on", ...) 驱动
@@ -843,13 +1075,15 @@ def _tool_qss(skin: Skin, danger: bool = False, accent: bool = False) -> str:
 
 
 def _tool_btn(text: str, skin: Optional[Skin] = None,
-              danger: bool = False, accent: bool = False) -> QToolButton:
+              danger: bool = False, accent: bool = False,
+              fonts: Optional[Fonts] = None) -> QToolButton:
     """工具栏按钮 — accent 给主功能上蓝底加粗, danger 给关闭上红底。"""
     b = QToolButton()
     b.setText(text)
     b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
     b.setStyleSheet(
-        _tool_qss(skin or current_skin(), accent=accent, danger=danger)
+        _tool_qss(skin or current_skin(), accent=accent, danger=danger,
+                  fonts=fonts)
     )
     b.setProperty("on", "false")
     return b

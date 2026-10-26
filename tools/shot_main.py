@@ -3,6 +3,7 @@
 用法:
     QT_QPA_PLATFORM=offscreen python tools/shot_main.py
     QT_QPA_PLATFORM=offscreen SKIN=dark_mode python tools/shot_main.py
+    QT_QPA_PLATFORM=offscreen SCALE=1.5 python tools/shot_main.py
 """
 
 from __future__ import annotations
@@ -46,15 +47,24 @@ for i, (content, t) in enumerate(seed):
 from pycal.ui.main_window import PyCalMainWindow
 
 skin = os.environ.get("SKIN", "light_default")
+scale = float(os.environ.get("SCALE", "0"))
 win = PyCalMainWindow(app, fullscreen=False)
 win._skin = __import__("pycal.ui.skin", fromlist=["x"]).current_skin(skin)
 win._apply_skin()
-win.resize(1280, 820)
+if scale > 0:
+    # 走和菜单一样的路径, 顺便验一下 _set_font_scale 没把界面搞坏
+    win._set_font_scale(scale)
+win.resize(int(os.environ.get("W", "1280")), int(os.environ.get("H", "820")))
+if os.environ.get("VIEW", "month") == "year":
+    win._toggle_year_view(True)
 win.show()
 app.processEvents()
 app.processEvents()
 
-out = ROOT / "build" / f"shot_{skin}.png"
+tag = os.environ.get("SCALE", "")
+view = os.environ.get("VIEW", "month")
+out = ROOT / "build" / (f"shot_{view}_{skin}_{tag}.png" if tag
+                        else f"shot_{view}_{skin}.png")
 out.parent.mkdir(parents=True, exist_ok=True)
 win.grab().save(str(out))
 print(f"saved: {out}")

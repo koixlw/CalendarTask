@@ -148,6 +148,7 @@ def main() -> int:
         "_toggle_notes", "refresh_view", "_toggle_topmost",
         "_toggle_animation", "_open_help", "_show_about", "_collapse",
         "_quit_app", "_set_skin", "_set_opacity",
+        "_toggle_year_view_from_menu",
     ]
     hit: list[str] = []
     saved = {n: getattr(win, n) for n in SPY_TARGETS}
