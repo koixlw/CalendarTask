@@ -326,6 +326,14 @@ def main() -> int:
 
     check("F5 刷新不炸", lambda: win.refresh_view())
 
+    # 退出前把「没有父对象」的顶层 widget 显式删掉 ——
+    # 它们比 app 活得久, 等 QApplication 析构之后再死, C++ 侧会随机段错误
+    # (Windows 报「access violation」, 大约三成概率复现)。
+    import shiboken6
+    for _orphan in (yv, mm):
+        if shiboken6.isValid(_orphan):
+            shiboken6.delete(_orphan)
+
     print("\n" + "=" * 70)
     print(f"通过 {len(PASS)} / 失败 {len(FAIL)}")
     if FAIL:

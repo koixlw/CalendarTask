@@ -23,7 +23,7 @@ from datetime import date, timedelta
 from typing import Optional
 
 from PySide6.QtCore import Qt, Signal, QPoint
-from PySide6.QtGui import QFont, QFontMetrics
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPalette, QPainter
 from PySide6.QtWidgets import (
     QWidget, QGridLayout, QFrame, QVBoxLayout, QHBoxLayout, QLabel,
     QMenu, QSizePolicy,
@@ -34,6 +34,7 @@ from pycal.db.repository import list_items_in_range, upsert_item, get_item
 from pycal.db.models import CalendarItem
 from pycal.ui.color_picker import color_to_hex
 from pycal.ui.fonts import Fonts, DEFAULT_SCALE, fonts_for
+from pycal.ui.outline_label import HaloLabel
 
 
 # ============================================================================
@@ -89,19 +90,57 @@ class CellColors:
     text_fg: str = "#222222"
     sub_fg: str = "#888888"
     header_fg: str = "#555555"
+    # ── 桌面挂件模式 ──
+    transparent: bool = False   # 格子不填底色 (壁纸直接透出来)
+    halo: str = ""              # 文字描边色 (空 = 不描边)
 
 
 _DARK_SKIN_NAMES = {"dark_mode"}
 
 
+def _qcolor(value: str) -> QColor:
+    """颜色字符串 → QColor。
+
+    QSS 认得 `rgba(r,g,b,a)`, 但 QColor 不认 —— 直接塞进去会得到一个
+    「不透明的黑」(isValid() 仍然是 True, 特别坑)。桌面挂件那套配色用的
+    就是 rgba(), 这里自己解析一遍。
+    """
+    s = (value or "").strip()
+    low = s.lower()
+    if low.startswith("rgba") or low.startswith("rgb"):
+        inner = s[s.find("(") + 1:s.rfind(")")]
+        parts = [x.strip() for x in inner.split(",") if x.strip()]
+        try:
+            r, g, b = (int(float(x)) for x in parts[:3])
+            a = int(float(parts[3])) if len(parts) > 3 else 255
+            return QColor(r, g, b, a)
+        except (ValueError, IndexError):
+            return QColor()
+    return QColor(s)
+
+
 def colors_for_skin(skin_name: str) -> CellColors:
-    """按皮肤名返回格子配色 — 只为 dark_mode 单独一套。"""
+    """按皮肤名返回格子配色 — dark_mode 和 desktop_widget 各一套。"""
     if skin_name in _DARK_SKIN_NAMES:
         return CellColors(
             body_bg="#2B2B30", muted_bg="#232327", today_bg="#4A4326",
             hover_bg="#33333A", border="#4A4A52", today_border="#4A90E2",
             num_fg="#ECEFF4", muted_fg="#6E6E76", done_fg="#75797F",
             text_fg="#ECEFF4", sub_fg="#9AA0A6", header_fg="#C8CDD6",
+        )
+    if skin_name == "desktop_widget":
+        # 桌面挂件 — 格子全透明, 只有网格线 + 带描边的字
+        return CellColors(
+            body_bg="transparent", muted_bg="transparent",
+            today_bg="rgba(255, 205, 60, 60)",
+            hover_bg="rgba(255, 255, 255, 70)",
+            border="rgba(255, 255, 255, 70)",
+            today_border="rgba(255, 205, 60, 220)",
+            num_fg="#FFFFFF", muted_fg="rgba(255, 255, 255, 140)",
+            done_fg="rgba(255, 255, 255, 150)", text_fg="#FFFFFF",
+            sub_fg="rgba(255, 255, 255, 200)",
+            header_fg="rgba(255, 255, 255, 235)",
+            transparent=True, halo="rgba(0, 0, 0, 175)",
         )
     return CellColors()
 
@@ -156,12 +195,12 @@ class LineRow(QWidget):
         self._font = QFont()
         self._font.setPointSize(self._fonts.row)
 
-        self._box = QLabel("☐")
+        self._box = HaloLabel("☐")
         self._box.setFont(self._font)
         self._box.setFixedWidth(self._fonts.box_w)
         self._box.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self._text = QLabel("")
+        self._text = HaloLabel("")
         self._text.setFont(self._font)
         self._text.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
@@ -178,9 +217,13 @@ class LineRow(QWidget):
         self._done = False
         self._fg = "#222222"
         self._done_fg = "#9AA0A6"
+        self._halo = ""
 
         self._box.setCursor(Qt.CursorShape.PointingHandCursor)
         self._box.setToolTip("单击打勾")
+        # QFontMetrics 缓存 — 每行每次 resize 都新建一个太浪费:
+        # 满屏 180 行 × 拖一次窗口 = 180 个 QFontMetrics。
+        self._metrics: Optional[QFontMetrics] = None
 
     def apply_fonts(self, fonts: Fonts) -> None:
         """换字号 — 行高 / ☐ 宽度 / 截断宽度都要跟着重算。"""
@@ -189,25 +232,34 @@ class LineRow(QWidget):
         self._box.setFont(self._font)
         self._box.setFixedWidth(fonts.box_w)
         self.setFixedHeight(fonts.row_h)
+        self._metrics = None      # 字号变了, 旧的度量作废
         self._render()
 
     # ------------------------------------------------------------------
     def bind(self, item_id: str, text: str, done: bool,
-             line_idx: Optional[int], fg: str, done_fg: str) -> None:
+             line_idx: Optional[int], fg: str, done_fg: str,
+             halo: str = "") -> None:
         self._item_id = item_id
         self._line_idx = line_idx
         self._label = text
         self._done = done
         self._fg = fg
         self._done_fg = done_fg
+        self._halo = halo
         self._label = text
         self._render()
 
     def _render(self) -> None:
         self._box.setText("☑" if self._done else "☐")
         fg = self._done_fg if self._done else self._fg
+        # 字色走调色板 — setStyleSheet 要重解析样式表, 一格 5 行 × 42 格
+        # = 400 多次, 翻一次月光这就得好几十毫秒。
         for lbl in (self._box, self._text):
-            lbl.setStyleSheet(f"color: {fg}; background: transparent;")
+            pal = lbl.palette()
+            pal.setColor(QPalette.ColorRole.WindowText, _qcolor(fg))
+            lbl.setPalette(pal)
+            # 描边 — 挂件模式字直接压在壁纸上, 没描边就看不清
+            lbl.setHalo(self._halo)
         # 已完成的行加删除线 — QSS 不支持 text-decoration, 走 QFont
         self._font.setStrikeOut(self._done)
         self._text.setFont(self._font)
@@ -218,7 +270,9 @@ class LineRow(QWidget):
         if self.width() <= 0:
             return    # 还没被布局定过尺寸 — 等 resizeEvent 再截
         avail = max(10, self.width() - self._box.width() - self._lay.spacing() - 2)
-        self._text.setText(QFontMetrics(self._font).elidedText(
+        if self._metrics is None:
+            self._metrics = QFontMetrics(self._font)
+        self._text.setText(self._metrics.elidedText(
             self._label, Qt.TextElideMode.ElideRight, avail))
 
     def resizeEvent(self, ev):
@@ -288,30 +342,82 @@ class DayCell(QFrame):
         self._hovered = False
         self._rows: list[LineRow] = []
 
-        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setFrameShape(QFrame.Shape.NoFrame)
         self.setMinimumSize(self._fonts.cell_min_w, self._fonts.cell_min_h)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._highlight = False
+        self._bg = "#FFFFFF"
+        self._border_color = "#BBBBBB"
+        self._border_w = 1
         self._build()
         self._refresh_bg()
 
+    def paintEvent(self, ev) -> None:
+        """自己画边框。
+
+        底色交给调色板 (autoFillBackground), 边框没有调色板角色, 只能自己画。
+        原来这块是挂一句 QSS (`#DayCell { background; border }`), 每次换样式
+        Qt 都要把整棵子树重新布局 (一格 5 行 × 2 个标签), 翻一个月几十个格子
+        就是几百次重排 —— 实测一次 0.6ms, 光这一项翻一次月就 25ms。
+        """
+        p = QPainter(self)
+        bg = _qcolor(self._bg)
+        if bg.alpha() > 0:
+            # 全透明 (挂件模式) 就不画底色 — 跟原来 QSS 的
+            # `background: transparent` 一个意思, 让壁纸直接透出来
+            p.fillRect(self.rect(), bg)
+        w = self._border_w
+        c = _qcolor(self._border_color)
+        r = self.rect()
+        p.fillRect(r.left(), r.top(), r.width(), w, c)
+        p.fillRect(r.left(), r.bottom() - w + 1, r.width(), w, c)
+        p.fillRect(r.left(), r.top(), w, r.height(), c)
+        p.fillRect(r.right() - w + 1, r.top(), w, r.height(), c)
+        p.end()
+
+    def set_highlight(self, on: bool) -> None:
+        """高亮某一天 (搜索跳转用) — 换底色和边框颜色。"""
+        self._highlight = on
+        self._refresh_bg()
+        self.update()
+
     def _apply_subtitle(self, text: str, is_jieqi: bool = False) -> None:
-        """显示农历/节气, 节气用红色突出。"""
+        """显示农历/节气, 节气用红色突出。
+
+        颜色走 QPalette、字形走 QFont, 不碰 QSS ——
+        setStyleSheet 每调一次都要重新解析样式表 + 重算样式, 单次 0.2ms,
+        翻月时几十个格子一起改就是几十毫秒。
+        """
         if is_jieqi:
-            self._sub_lbl.setStyleSheet(
-                "color: #C0392B; font-style: italic; font-weight: bold;"
-            )
+            self._set_sub_style("#C0392B", bold=True, italic=True)
             self._sub_lbl.setText(f"⚡ {text}")
         elif text in ("春节", "元宵", "端午", "中秋", "重阳"):
-            self._sub_lbl.setStyleSheet(
-                "color: #C0392B; font-weight: bold;"
-            )
+            self._set_sub_style("#C0392B", bold=True, italic=False)
             self._sub_lbl.setText(text)
         else:
-            self._sub_lbl.setStyleSheet(
-                f"color: {self._colors.sub_fg}; font-style: italic;"
-            )
+            self._set_sub_style(self._colors.sub_fg, bold=False, italic=True)
             self._sub_lbl.setText(text)
+
+    def _set_sub_style(self, color: str, bold: bool, italic: bool) -> None:
+        """副标题的颜色和字形 — 调色板 + QFont。"""
+        self._set_label_color(self._sub_lbl, color)
+        f = QFont(self._sub_lbl.font())
+        f.setBold(bold)
+        f.setItalic(italic)
+        f.setPointSize(self._fonts.sub)
+        self._sub_lbl.setFont(f)
+
+    def _set_label_color(self, label: QLabel, color: str) -> None:
+        """给标签换字色 — 走调色板, 不用 QSS (快一个数量级)。
+
+        挂件模式 (transparent) 下格子没有底色, 字直接压在壁纸上 ——
+        顺手加一圈描边, 否则亮壁纸上浅色字就看不见了。
+        """
+        pal = label.palette()
+        pal.setColor(QPalette.ColorRole.WindowText, _qcolor(color))
+        label.setPalette(pal)
+        label.setHalo(self._colors.halo if self._colors.transparent else "")
 
     def _build(self) -> None:
         self._lay = QVBoxLayout(self)
@@ -321,15 +427,17 @@ class DayCell(QFrame):
         # 顶部: 日期号 + 类型小图标
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
-        self._num_lbl = QLabel(str(self.day_num) if self.in_month else "")
+        # 日期号和农历之间留点缝 —— 挂件里格子窄, 贴一起就糊成一团
+        top.setSpacing(3)
+        self._num_lbl = HaloLabel(str(self.day_num) if self.in_month else "")
         top.addWidget(self._num_lbl)
 
         # 节假日/lunar 副标题
-        self._sub_lbl = QLabel("")
+        self._sub_lbl = HaloLabel("")
         top.addWidget(self._sub_lbl)
 
         top.addStretch()
-        self._type_lbl = QLabel("")
+        self._type_lbl = HaloLabel("")
         top.addWidget(self._type_lbl)
         self._lay.addLayout(top)
 
@@ -340,7 +448,7 @@ class DayCell(QFrame):
         self._lay.addLayout(self._rows_lay, 1)
 
         # "+N 更多"
-        self._more_lbl = QLabel("")
+        self._more_lbl = HaloLabel("")
         self._more_lbl.setVisible(False)
         self._lay.addWidget(self._more_lbl)
 
@@ -350,10 +458,7 @@ class DayCell(QFrame):
     def _apply_fonts(self) -> None:
         """把 self._fonts 落到各个标签上 — 日期号粗细跟着 is_today 走。"""
         f = self._fonts
-        num_font = QFont()
-        num_font.setBold(self.is_today)
-        num_font.setPointSize(f.num_today if self.is_today else f.num)
-        self._num_lbl.setFont(num_font)
+        self._update_num_font()
 
         # 副标题 / "+N 更多" 的字号和颜色都写在 _refresh_bg 的 QSS 里, 那边
         # QSS 一旦带了 font-size 就会盖掉 QFont, 所以只让它一处说了算。
@@ -361,6 +466,35 @@ class DayCell(QFrame):
         for row in self._rows:
             row.apply_fonts(f)
         self._refresh_bg()
+
+    def _update_num_font(self) -> None:
+        """日期号的字体 — 今天加粗并用大一号。"""
+        f = self._fonts
+        num_font = QFont()
+        num_font.setBold(self.is_today)
+        num_font.setPointSize(f.num_today if self.is_today else f.num)
+        self._num_lbl.setFont(num_font)
+
+    def rebind(self, day_iso: str, day_num: int, in_month: bool,
+               is_today: bool, subtitle: str = "") -> None:
+        """换一天 — 复用这个 widget, 不重建。
+
+        翻月时整块 42 个格子全部销毁重建的话, 光建控件就要 ~90ms
+        (每个格子还带 5 个 LineRow, 一行又是 3 个控件)。复用之后
+        翻月几乎不花钱 —— 实测 95ms → 几 ms。
+        """
+        self.day_iso = day_iso
+        self.day_num = day_num
+        self.in_month = in_month
+        self.is_today = is_today
+        self._highlight = False       # 换了日子, 上一次的高亮就不算了
+        self._num_lbl.setText(str(day_num) if in_month else "")
+        self._update_num_font()
+        self.set_items([])
+        self._refresh_bg()
+        # _refresh_bg 会重置副标题样式, 所以副标题放在它后面设 —
+        # 节气的红色才会盖住默认灰色。
+        self.set_subtitle(subtitle)
 
     def apply_fonts(self, fonts: Fonts) -> None:
         """外部调字号 — 字号大了, 每格能显示的条数也跟着变少。"""
@@ -388,6 +522,8 @@ class DayCell(QFrame):
             # 不是本月的格子 → 不显示日期号, 也不显示农历/节气。
             # 「以月为单位」: 这一格是上/下个月的日子, 空着就行。
             self._sub_lbl.setText("")
+            # 样式也得跟着复位 — 否则上一轮显示节气时留下的红色会留在这儿
+            self._set_sub_style(self._colors.sub_fg, bold=False, italic=True)
             return
         # text 可能已被 _subtitle_for 加上 "⚡ " 前缀
         is_jieqi = text.startswith("⚡ ")
@@ -396,29 +532,32 @@ class DayCell(QFrame):
 
     def _refresh_bg(self) -> None:
         c = self._colors
-        if not self.in_month:
+        if self._highlight:
+            bg, fg = "#FFE5B4", c.num_fg
+            border_color, border_w = "#FF8C00", 2
+        elif not self.in_month:
             bg, fg = c.muted_bg, c.muted_fg
+            border_color, border_w = c.border, 1
         elif self.is_today:
             bg, fg = c.today_bg, c.num_fg
+            border_color, border_w = c.today_border, 2
         else:
             bg, fg = c.body_bg, c.num_fg
-        if self._hovered and not self.is_today:
+            border_color, border_w = c.border, 1
+        if self._hovered and not self.is_today and not self._highlight:
             bg, border_color, border_w = c.hover_bg, "#4A90E2", 1
-        else:
-            border_color = c.today_border if self.is_today else c.border
-            border_w = 2 if self.is_today else 1
-        self.setStyleSheet(
-            f"#DayCell {{ background: {bg};"
-            f" border: {border_w}px solid {border_color}; }}"
-        )
-        self._num_lbl.setStyleSheet(f"color: {fg};")
-        self._sub_lbl.setStyleSheet(
-            f"color: {c.sub_fg}; font-style: italic;"
-            f" font-size: {self._fonts.sub}pt;"
-        )
-        self._more_lbl.setStyleSheet(
-            f"color: {c.sub_fg}; font-size: {self._fonts.more}pt;"
-        )
+        self._border_color = border_color
+        self._border_w = border_w
+        # 底色走调色板 — 调色板改动比 QSS 便宜一个数量级
+        self._bg = bg
+        self._set_label_color(self._num_lbl, fg)
+        self._set_label_color(self._sub_lbl, c.sub_fg)
+        self._set_label_color(self._more_lbl, c.sub_fg)
+        self._set_label_color(self._type_lbl, c.text_fg)
+        # 字号用 QFont 定住 — QSS 一旦带了 font-size 就会盖掉 QFont
+        more_font = QFont(self._more_lbl.font())
+        more_font.setPointSize(self._fonts.more)
+        self._more_lbl.setFont(more_font)
 
     # ------------------------------------------------------------------
     def _rows_for_display(self) -> list[tuple[CalendarItem, str, bool, Optional[int]]]:
@@ -469,7 +608,8 @@ class DayCell(QFrame):
                 it, text, done, idx = shown[i]
                 fg = color_to_hex(it.color_ref) if it.color_ref \
                     else self._colors.text_fg
-                row.bind(it.item_id, text, done, idx, fg, self._colors.done_fg)
+                row.bind(it.item_id, text, done, idx, fg, self._colors.done_fg,
+                         self._colors.halo)
                 row.setVisible(True)
             else:
                 row.setVisible(False)
@@ -492,10 +632,14 @@ class DayCell(QFrame):
             self.sig_right_click.emit(self.day_iso)
         elif ev.button() == Qt.MouseButton.LeftButton:
             self.sig_single_click.emit(self.day_iso)
+        # 吃掉这次按下 — 别让它冒到父窗口去: 主窗那边会拿边缘 resize 判定,
+        # 桌面挂件那边会当成拖动挂件。点格子就是点格子。
+        ev.accept()
 
     def mouseDoubleClickEvent(self, ev):
         if ev.button() == Qt.MouseButton.LeftButton:
             self.sig_double_click.emit(self.day_iso)
+            ev.accept()
 
     def enterEvent(self, ev):
         self._hovered = True
@@ -530,9 +674,23 @@ class MonthView(QWidget):
                  fonts: Optional[Fonts] = None):
         super().__init__(parent)
         self._cur = date.today().replace(day=1)
-        self._grid = QGridLayout(self)
+        # 外层: 星期表头一行 + 格子网格
+        # 表头单独一层, 格子网格固定 6 行 × 7 列 —— 翻月只改格子里���内容,
+        # 布局结构一动不动。反复 removeWidget/addWidget 重排格子既慢,
+        # 又会把 QGridLayout 的内部索引搞乱 (能在退出时炸掉)。
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
+        self._head_grid = QGridLayout()
+        self._head_grid.setSpacing(2)
+        outer.addLayout(self._head_grid)
+        self._grid = QGridLayout()
         self._grid.setSpacing(2)
+        outer.addLayout(self._grid, 1)
         self._cells: dict[str, DayCell] = {}
+        # 格子池 — 所有月份的格子都从这里取, 翻月时复用不重建
+        self._pool: list[DayCell] = []
+        self._weeks = 6
         self._header_lbls: list[QLabel] = []
         self._colors = colors_for_skin(skin_name)
         # fonts 直接传进来的, 就别再按比例重算 — 年视图里详情那块要塞得下,
@@ -545,7 +703,32 @@ class MonthView(QWidget):
         self.sig_edit_item.connect(self._handle_edit_item)
         self.sig_request_menu.connect(self._show_context_menu)
 
+        self._build_grid()
         self._render()
+
+    def _build_grid(self) -> None:
+        """星期表头 + 6×7 的格子 — 一次建好, 之后翻月只改内容。
+
+        以前这里是「每个月都把 42 个格子销毁重建」—— 满月的月份光建控件
+        就要 90ms (每个格子还带 5 个 LineRow)。建一次, 后面全靠复用。
+        """
+        for col, h in enumerate(_HEADERS):
+            lbl = HaloLabel(h)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._head_grid.addWidget(lbl, 0, col)
+            self._header_lbls.append(lbl)
+        self._style_headers()
+
+        for row in range(6):
+            for col in range(7):
+                cell = DayCell("", 0, colors=self._colors, fonts=self._fonts)
+                cell.sig_double_click.connect(self.sig_edit_day)
+                cell.sig_single_click.connect(self._handle_single_click)
+                cell.sig_right_click.connect(self._handle_right_click)
+                cell.sig_toggle_line.connect(self._handle_toggle)
+                cell.sig_open_item.connect(self.sig_edit_item)
+                self._grid.addWidget(cell, row, col)
+                self._pool.append(cell)
 
     # ------------------------------------------------------------------
     # 皮肤 / 字号
@@ -558,12 +741,26 @@ class MonthView(QWidget):
         )
         for lbl in self._header_lbls:
             lbl.setStyleSheet(qss)
+            # 挂件模式表头也是压在壁纸上的字 — 一样要描边
+            lbl.setHalo(self._colors.halo if self._colors.transparent else "")
 
     def apply_skin(self, skin_name: str) -> None:
         """换皮肤时把新配色推给所有格子 (含星期表头)。"""
         self._colors = colors_for_skin(skin_name)
         self._style_headers()
-        for cell in self._cells.values():
+        for cell in self._pool:
+            cell.set_palette(self._colors)
+
+    def apply_palette_override(self, **overrides) -> None:
+        """只改配色里的某几项, 推给所有格子。
+
+        桌面挂件用它按壁纸亮度换字色 —— 亮壁纸用深字, 暗壁纸用浅字,
+        不然总有一半的壁纸上看不清。
+        """
+        from dataclasses import replace
+        self._colors = replace(self._colors, **overrides)
+        self._style_headers()
+        for cell in self._pool:
             cell.set_palette(self._colors)
 
     def apply_font_scale(self, scale: float) -> None:
@@ -574,7 +771,7 @@ class MonthView(QWidget):
         """直接用一份算好的字号表 — 年视图里详情那块用压缩过的格子高度。"""
         self._fonts = fonts
         self._style_headers()
-        for cell in self._cells.values():
+        for cell in self._pool:
             cell.apply_fonts(self._fonts)
 
     # ------------------------------------------------------------------
@@ -611,10 +808,7 @@ class MonthView(QWidget):
         # 高亮目标 cell
         cell = self._cells.get(day_iso)
         if cell:
-            cell.setStyleSheet(
-                "#DayCell { background: #FFE5B4; border: 2px solid #FF8C00; }"
-            )
-            cell.repaint()
+            cell.set_highlight(True)
 
     def refresh(self) -> None:
         """外部更新数据库后, 重新拉数据并刷新 UI。"""
@@ -624,22 +818,6 @@ class MonthView(QWidget):
     # 渲染
     # ------------------------------------------------------------------
     def _render(self) -> None:
-        while self._grid.count():
-            item = self._grid.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
-        self._cells.clear()
-        self._header_lbls.clear()
-
-        # 星期标题 (一~日)
-        for col, h in enumerate(_HEADERS):
-            lbl = QLabel(h)
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._grid.addWidget(lbl, 0, col)
-            self._header_lbls.append(lbl)
-        self._style_headers()
-
         first_weekday = self._cur.weekday()  # 0=Mon
         start = self._cur - timedelta(days=first_weekday)
         today_iso = date.today().isoformat()
@@ -649,29 +827,26 @@ class MonthView(QWidget):
         from calendar import monthrange
         days_in_month = monthrange(self._cur.year, self._cur.month)[1]
         weeks = (first_weekday + days_in_month + 6) // 7   # 向上取整
+        self._weeks = weeks
+        need = weeks * 7
 
-        for week in range(weeks):
-            for col in range(7):
-                d = start + timedelta(days=week * 7 + col)
-                in_month = d.month == self._cur.month
-                is_today = d.isoformat() == today_iso
-                is_weekend = col >= 5
-                cell = DayCell(
-                    d.isoformat(), d.day,
-                    in_month=in_month,
-                    is_today=is_today,
-                    is_weekend=is_weekend,
-                    colors=self._colors,
-                    fonts=self._fonts,
-                )
-                cell.set_subtitle(self._subtitle_for(d))
-                cell.sig_double_click.connect(self.sig_edit_day)
-                cell.sig_single_click.connect(self._handle_single_click)
-                cell.sig_right_click.connect(self._handle_right_click)
-                cell.sig_toggle_line.connect(self._handle_toggle)
-                cell.sig_open_item.connect(self.sig_edit_item)
-                self._grid.addWidget(cell, week + 1, col)
-                self._cells[d.isoformat()] = cell
+        self._cells.clear()
+        for i in range(need):
+            d = start + timedelta(days=i)
+            cell = self._pool[i]
+            cell.rebind(
+                d.isoformat(), d.day,
+                in_month=d.month == self._cur.month,
+                is_today=d.isoformat() == today_iso,
+                subtitle=self._subtitle_for(d),
+            )
+            cell.setVisible(True)
+            self._cells[d.isoformat()] = cell
+
+        # 用不上的格子 (上个月 6 周 → 这个月 5 周) 收起来, 不占地方
+        for cell in self._pool[need:]:
+            cell.setVisible(False)
+            cell.set_items([])
 
         self._refresh_data()
 
@@ -688,7 +863,8 @@ class MonthView(QWidget):
         try:
             con = open_default()
             first = self._cur - timedelta(days=self._cur.weekday())
-            last = first + timedelta(days=41)
+            # 只取这个月真正用到的那几周 — 5 周的月份不用多扫一周
+            last = first + timedelta(days=self._weeks * 7 - 1)
             items = list_items_in_range(
                 con, first.isoformat(), last.isoformat(),
             )
@@ -786,7 +962,18 @@ class MonthView(QWidget):
             print(f"[MonthView] 勾选存库失败: {e}")
             self._refresh_data()      # 回滚 UI
             return
-        self._refresh_data()
+        # 只刷受影响的那一格 —— 整月重刷要重新拉库 + 重绑 42 个格子,
+        # 满月的月份点一下勾要 16ms, 其实只有一格变了。
+        cell = self._cells.get(it.date) if it.date else None
+        if cell is None:
+            self._refresh_data()
+        else:
+            for c_it in cell._items:
+                if c_it.item_id == item_id:
+                    c_it.is_completed = it.is_completed
+                    c_it.content = it.content
+                    break
+            cell.set_items(cell._items)
         self.sig_data_changed.emit()
 
     def _handle_new_request(self, day_iso: str, type: int) -> None:

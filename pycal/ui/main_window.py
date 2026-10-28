@@ -21,6 +21,7 @@ from typing import Optional
 from PySide6.QtCore import (
     Qt, QPoint, Signal, QSize, QPropertyAnimation, QEasingCurve,
     QParallelAnimationGroup, QAbstractAnimation, QRect, QTimer,
+    QThread, Slot, QObject,
 )
 from PySide6.QtGui import (
     QAction, QColor, QFont, QIcon, QPixmap, QPainter, QShortcut, QKeySequence,
@@ -106,6 +107,12 @@ def run(fullscreen: bool = True) -> int:
     win._worker = worker
 
     win.show()
+
+    # 桌面挂件 — 上次开着就接着开 (挂在桌面层, 不抢主窗的焦点)
+    from pycal.settings import get_setting
+    if get_setting("desktop_widget", "0") == "1":
+        win._widget_mgr.show()
+
     return app.exec()
 
 
@@ -134,6 +141,9 @@ class PyCalMainWindow(FloatingWindow):
         self._fonts: Fonts = fonts_for(self._font_scale)
         # 当前显示的是月视图还是年视图 — 年视图下面还带一块月视图详情
         self._view_mode = "month"
+        # 年视图 / 动画用的第二个月视图 — 都按需构建 (见 _year_view / _ensure_idle_month_view)
+        self._year_view_obj: Optional[YearView] = None
+        self._idle_month_view: Optional[MonthView] = None
         # 对话框 (编辑器 / 搜索 / 帮助) 用的都是系统默认字号, 这里记下基准值,
         # 调字号时好按比例一起放大 — 不然大窗配小字会很割裂。
         # 基准只取一次: 每次都拿当前值再乘会把字号滚雪球。
@@ -157,6 +167,11 @@ class PyCalMainWindow(FloatingWindow):
             | Qt.WindowType.WindowStaysOnBottomHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+        # 桌面挂件 — 贴在桌面层的小月历 (壁纸透出来那种)。
+        # 得在 _build_ui 之前建 —— 工具栏菜单里要挂它的开关项。
+        from pycal.ui.desktop_widget import DesktopWidgetManager
+        self._widget_mgr = DesktopWidgetManager(self)
 
         # 应用皮肤 + 不透明度
         self._apply_skin()
@@ -270,24 +285,17 @@ class PyCalMainWindow(FloatingWindow):
         self._stack = QStackedWidget()
         self._month_left = MonthView(skin_name=self._skin.name,
                                       font_scale=self._font_scale)
-        self._month_right = MonthView(skin_name=self._skin.name,
-                                       font_scale=self._font_scale)
-        # 两层用于 slide-in / slide-out
         self._stack.addWidget(self._month_left)
-        self._stack.addWidget(self._month_right)
         self._stack.setCurrentIndex(0)
         # 当前月份初始设定相同
         self._active_month_view = self._month_left
-        self._idle_month_view = self._month_right
+        # 第二层 (动画的 slide-in 目标) 第一次翻月时才建 —— 见
+        # _ensure_idle_month_view。白建一遍要多花 ~20ms 启动时间。
         # 勾选/增删后刷新状态栏计数
-        for mv in (self._month_left, self._month_right):
-            mv.sig_data_changed.connect(self._update_count)
+        self._active_month_view.sig_data_changed.connect(self._update_count)
 
-        # 年视图 — 另一层: 上面 12 个小月 (一~日), 下面是选中月的详情
-        self._year_view = YearView(skin_name=self._skin.name,
-                                   font_scale=self._font_scale)
-        self._year_view.sig_data_changed.connect(self._update_count)
-        self._year_view.sig_month_changed.connect(self._on_year_month_changed)
+        # 年视图 — 另一层: 上面 12 个小月 (一~日), 下面是选中月的详情。
+        # 按需构建 —— 见 _year_view 属性。
         # 套一层滚动区 — 屏太矮时 (1366×768) 年视图放不下, 至少能滚,
         # 不会被布局硬撑出屏幕外
         self._year_scroll = QScrollArea()
@@ -295,7 +303,6 @@ class PyCalMainWindow(FloatingWindow):
         self._year_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._year_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._year_scroll.setWidget(self._year_view)
 
         # 外层栈: 0 = 月视图, 1 = 年视图
         self._view_stack = QStackedWidget()
@@ -353,7 +360,8 @@ class PyCalMainWindow(FloatingWindow):
                              "年视图: 一屏 12 个月的小格子 (周一~周日), "
                              "下面是选中月的详情"),
             (self._btn_report, "生成日报 / 周报\n预览、复制、导出 MD / HTML / PDF"),
-            (self._btn_ai, "用 Claude 把日报 / 周报改写得更通顺\n(需要 ANTHROPIC_API_KEY)"),
+            (self._btn_ai, "用 Claude 把日报 / 周报改写得更通顺\n"
+                            "(没配 key? 点「⋯ 更多 → 🔑 AI 润色 API key」)"),
             (self._btn_search, "搜索全部条目\n快捷键 Ctrl+F"),
             (self._btn_more, "全部功能菜单\n云同步 / 便签 / 导入 / 外观 / 壁纸 …"),
             (self._btn_help, "快捷键与功能说明\n快捷键 F1"),
@@ -376,6 +384,7 @@ class PyCalMainWindow(FloatingWindow):
             ("F1", self._open_help),
             ("Ctrl+S", self._open_sync),
             ("Y", self._toggle_year_view_from_menu),
+            ("Ctrl+,", self._open_settings),
         ]:
             QShortcut(QKeySequence(key), self, activated=slot)
 
@@ -398,6 +407,46 @@ class PyCalMainWindow(FloatingWindow):
     # ------------------------------------------------------------------
     # 月 / 年视图切换
     # ------------------------------------------------------------------
+    @property
+    def _year_view(self) -> YearView:
+        """年视图 — 第一次用到时才建。
+
+        年视图自带 12 个小月 + 一整块月视图 (详情), 光 widget 就 1800 多个,
+        启动时白建一遍要 ~70ms + 一大堆内存。真正常用的人其实很少切过去,
+        所以按需构建 —— 用到之前不花这个钱。
+        """
+        yv = self._year_view_obj
+        if yv is None:
+            yv = YearView(skin_name=self._skin.name,
+                          font_scale=self._font_scale)
+            yv.sig_data_changed.connect(self._update_count)
+            yv.sig_month_changed.connect(self._on_year_month_changed)
+            self._year_scroll.setWidget(yv)
+            self._year_view_obj = yv
+        return yv
+
+    def _ensure_idle_month_view(self) -> MonthView:
+        """翻月动画要用的那块月视图 — 第一次翻月时才建。
+
+        它跟当前那块长得一模一样, 启动时先建一份纯属白花 ~20ms。
+        """
+        mv = self._idle_month_view
+        if mv is None:
+            mv = MonthView(skin_name=self._skin.name,
+                           font_scale=self._font_scale)
+            mv.sig_data_changed.connect(self._update_count)
+            self._stack.addWidget(mv)
+            self._idle_month_view = mv
+        return mv
+
+    def _month_views(self) -> list[MonthView]:
+        """当前存在的月视图 (动画那块可能还没建)。"""
+        out = []
+        for mv in (getattr(self, "_month_left", None), self._idle_month_view):
+            if mv is not None:
+                out.append(mv)
+        return out
+
     def _is_year_view(self) -> bool:
         return getattr(self, "_view_mode", "month") == "year"
 
@@ -427,7 +476,8 @@ class PyCalMainWindow(FloatingWindow):
             # 回到月视图 — 停在哪个月就停在哪个月
             y, m = self._year_view.current_month()
             self._active_month_view.goto(y, m)
-            self._idle_month_view.goto(y, m)
+            if self._idle_month_view is not None:
+                self._idle_month_view.goto(y, m)
             self._view_stack.setCurrentIndex(0)
         self._sync_year_btn()
         self._update_month_label()
@@ -504,7 +554,8 @@ class PyCalMainWindow(FloatingWindow):
         点小月、点日期、翻月都会走到这儿。回到月视图时正好停在这个月。
         """
         self._active_month_view.goto(y, m)
-        self._idle_month_view.goto(y, m)
+        if self._idle_month_view is not None:
+            self._idle_month_view.goto(y, m)
         self._update_month_label()
         self._update_count()
 
@@ -531,9 +582,9 @@ class PyCalMainWindow(FloatingWindow):
             self._update_count()
             return
 
-        # 准备 idle 月视图到目标月
-        self._idle_month_view.goto(y, m)
-        self._idle_month_view.refresh()
+        # 准备 idle 月视图到目标月 (第一次翻月时才建这块)
+        idle = self._ensure_idle_month_view()
+        idle.goto(y, m)
 
         # slide 方向
         width = self._stack.width()
@@ -619,14 +670,16 @@ class PyCalMainWindow(FloatingWindow):
             self._year_view.goto(today.year, today.month)
         else:
             self._active_month_view.goto_today()
-            self._idle_month_view.goto_today()    # 保持同步
+            if self._idle_month_view is not None:
+                self._idle_month_view.goto_today()    # 保持同步
         self._update_month_label()
         self._update_count()
 
     def refresh_view(self) -> None:
         self._active_month_view.refresh()
-        if getattr(self, "_year_view", None) is not None:
-            self._year_view.refresh()
+        yv = self._year_view_obj
+        if yv is not None:
+            yv.refresh()
         self._update_count()
 
     # ------------------------------------------------------------------
@@ -679,12 +732,10 @@ class PyCalMainWindow(FloatingWindow):
                 f" font-size: {self._fonts.status}pt; }}"
             )
         # 月视图的格子配色是内联样式, 不会跟着主窗 QSS 走 — 得手动推
-        for mv in (getattr(self, "_month_left", None),
-                   getattr(self, "_month_right", None)):
-            if mv is not None:
-                mv.apply_skin(self._skin.name)
+        for mv in self._month_views():
+            mv.apply_skin(self._skin.name)
         # 年视图同理 — 小月和下面那块详情都得重刷
-        yv = getattr(self, "_year_view", None)
+        yv = self._year_view_obj
         if yv is not None:
             yv.apply_skin(self._skin.name)
         # 工具栏按钮同理 — 各自有内联 QSS, 换皮肤得逐个重刷
@@ -711,11 +762,9 @@ class PyCalMainWindow(FloatingWindow):
                 f"QStatusBar > QLabel {{ color: {self._skin.status_fg};"
                 f" font-size: {self._fonts.status}pt; }}"
             )
-        for mv in (getattr(self, "_month_left", None),
-                   getattr(self, "_month_right", None)):
-            if mv is not None:
-                mv.apply_font_scale(self._font_scale)
-        yv = getattr(self, "_year_view", None)
+        for mv in self._month_views():
+            mv.apply_font_scale(self._font_scale)
+        yv = self._year_view_obj
         if yv is not None:
             yv.apply_font_scale(self._font_scale)
         # 工具栏按钮重刷了样式, 年视图按钮的高亮要重新 polish 才认
@@ -757,7 +806,7 @@ class PyCalMainWindow(FloatingWindow):
         item("生成日报 / 周报…", "预览、复制, 或导出成 MD / HTML / PDF",
              self._open_report, "Ctrl+R")
         item("用 AI 润色日报…", "调用 Claude 把日报改写得更通顺 "
-                              "(需配置 ANTHROPIC_API_KEY)",
+                              "(需配置 API key)",
              self._open_ai, "Ctrl+Shift+R")
 
         section("数据")
@@ -775,12 +824,27 @@ class PyCalMainWindow(FloatingWindow):
                        self._toggle_topmost)
         top_act.setCheckable(True)
         top_act.setChecked(self._topmost)
+        widget_act = item(
+            "桌面挂件 (贴在桌面上的小日历)",
+            "在屏幕角落放一个小月历, 壁纸透出来那种\n"
+            "挂在桌面层, 别的窗口能盖住它; 右键挂件能改层级和字色\n"
+            "主窗铺满屏幕时会挡住挂件 —— 收成窗口就看得见了",
+            self._toggle_widget)
+        widget_act.setCheckable(True)
+        widget_act.setChecked(
+            self._widget_mgr is not None and self._widget_mgr.visible())
         anim_act = item("月份切换动画", "翻月时左右滑动, 可以关掉",
                         self._toggle_animation)
         anim_act.setCheckable(True)
         anim_act.setChecked(_load_setting("anim", "1") == "1")
         item("生成月历壁纸…", "把当月月视图导成图片并设为桌面壁纸",
              lambda: _set_wallpaper(self))
+
+        section("设置")
+        item("🔑 AI 润色 API key…",
+             "填 Anthropic API key, 界面上就能用 AI 润色日报/周报 "
+             "(不用再改环境变量)",
+             self._open_settings, "Ctrl+,")
 
         section("帮助")
         item("快捷键与功能说明…", "所有功能和快捷键一览", self._open_help, "F1")
@@ -926,6 +990,26 @@ class PyCalMainWindow(FloatingWindow):
         _save_setting("topmost", "1" if self._topmost else "0")
         self._apply_topmost()
 
+    def _toggle_widget(self) -> None:
+        """开关桌面挂件 —— 挂在桌面层的小月历。"""
+        if self._widget_mgr is None:
+            return
+        was_on = self._widget_mgr.visible()
+        self._widget_mgr.toggle()
+        if not was_on and getattr(self, "_full", False) and self._has_tray():
+            # 挂件在桌面层, 主窗还铺满整个屏幕的话根本看不见它 ——
+            # 不说一声的话, 用户会以为这功能没生效。
+            self._tray.showMessage(
+                "桌面挂件已打开",
+                "主窗现在铺满屏幕, 会把挂件挡住。\n"
+                "点工具栏「□ 收成窗口」或者「— 收起」就能看到它。",
+                QSystemTrayIcon.MessageIcon.Information,
+                5000,
+            )
+        # 菜单里的勾选态跟着变。菜单此刻还开着, 直接重建会把它拆了 ——
+        # 推到下一轮事件循环再重建, 菜单已经关了才安全。
+        QTimer.singleShot(0, self._refresh_more_menu)
+
     def _apply_topmost(self) -> None:
         flags = self.windowFlags()
         if self._topmost:
@@ -959,18 +1043,34 @@ class PyCalMainWindow(FloatingWindow):
         ReportDialog(self, start_ai=start_ai).exec()
 
     def _open_ai(self) -> None:
-        """AI 润色日报 — 没配 key 就直接给配置指引, 而不是开一个灰按钮的窗。"""
+        """AI 润色日报 — 没配 key 就直接把配置窗口摆出来, 而不是让人去改环境变量。"""
         from pycal.report.ai_polish import has_api_key, api_key_hint
         if not has_api_key():
-            QMessageBox.information(
-                self, "AI 日报 — 还差一步",
-                "AI 润色需要一个 Anthropic API key。\n\n"
-                + api_key_hint()
-                + "\n\n设好之后重启 PyCal, 工具栏的「✨ AI 日报」就能用了。"
-                "\n不配也不影响其它功能 —— 日报/周报照常能生成。",
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setWindowTitle("AI 日报 — 还差一步")
+            box.setText("AI 润色需要一个 Anthropic API key。")
+            box.setInformativeText(
+                api_key_hint()
+                + "\n\n不配也不影响其它功能 —— 日报/周报照常能生成。"
             )
-            return
+            btn_cfg = box.addButton("🔑 现在配置",
+                                    QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("稍后再说", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            # 配好了就直接继续 —— 别让人再点一次「AI 日报」
+            if box.clickedButton() is not btn_cfg:
+                return
+            if not self._open_settings():
+                return
         self._open_report(start_ai=True)
+
+    def _open_settings(self) -> bool:
+        """设置对话框 (API key)。返回关掉之后有没有可用的 key。"""
+        from pycal.ui.settings_dialog import SettingsDialog
+        dlg = SettingsDialog(self)
+        dlg.exec()
+        return dlg.key_configured()
 
     def _new_item_today(self) -> None:
         """Ctrl+N — 在今天新建一条格子条目。"""
@@ -1018,22 +1118,48 @@ class PyCalMainWindow(FloatingWindow):
             print(f"[report] 自动生成失败: {e}")
 
     def _auto_sync_tick(self) -> None:
-        """后台自动同步 — 无账号时静默跳过, 失败不打扰用户。"""
+        """后台自动同步 — 无账号时静默跳过, 失败不打扰用户。
+
+        同步要跑网络 (CalDAV 往返), 一次几秒到几十秒 —— 放主线程里
+        界面会整个冻住, 拖不动也点不了。所以丢到后台线程去, 跑完再
+        通过信号回主线程刷新。
+        """
         try:
             from pycal.sync.accounts import list_accounts
             accs = [a for a in list_accounts() if a.enabled]
             if not accs:
                 return
-            from pycal.sync.engine import sync_all
-            results = sync_all()
-            total = sum(r.pulled + r.pushed for r in results)
-            if total:
-                self._count_label.setText(
-                    f"{self._count_label.text()}  ☁ 同步 {total} 条"
-                )
-                self.refresh_view()
         except Exception:
-            pass    # 后台任务不弹窗
+            return
+        if getattr(self, "_sync_running", False):
+            return      # 上一轮还没跑完, 别叠上来
+        self._sync_running = True
+
+        runner = _SyncRunner()
+        thread = QThread(self)
+        runner.moveToThread(thread)
+        thread.started.connect(runner.run)
+        runner.finished.connect(self._on_sync_finished)
+        runner.finished.connect(thread.quit)
+        thread.finished.connect(runner.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        # 留着引用 — 不然 QThread 可能被提前回收掉
+        self._sync_runner = runner
+        self._sync_thread = thread
+        thread.start()
+
+    def _on_sync_finished(self, results) -> None:
+        """同步跑完 (在主线程) — 刷新界面。"""
+        self._sync_running = False
+        try:
+            total = sum(r.pulled + r.pushed for r in results or [])
+        except Exception:
+            total = 0
+        if total:
+            self.refresh_view()          # 先刷新 (会把状态栏文字重置)
+            self._count_label.setText(
+                f"{self._count_label.text()}  ☁ 同步 {total} 条"
+            )
 
     def _toggle_notes(self) -> None:
         from pycal.notes import NotesManager
@@ -1132,28 +1258,42 @@ class PyCalMainWindow(FloatingWindow):
 
 
 # ============================================================================
+# 后台同步 worker
+# ============================================================================
+class _SyncRunner(QObject):
+    """在后台线程里跑云同步。
+
+    信号 finished 在工作线程里发出去, 主窗口那边是排队连接, 自动切回
+    主线程执行 —— 界面不会被网络 IO 卡住。
+    """
+
+    finished = Signal(list)
+
+    def __init__(self, parent: Optional[QObject] = None):
+        super().__init__(parent)
+
+    @Slot()
+    def run(self) -> None:
+        results: list = []
+        try:
+            from pycal.sync.engine import sync_all
+            results = sync_all()
+        except Exception as e:
+            print(f"[sync] 后台同步失败: {e}")
+        self.finished.emit(results)
+
+
+# ============================================================================
 # 工具函数
 # ============================================================================
 def _load_setting(key: str, default: str = "") -> str:
-    try:
-        cur = open_default().execute(
-            "SELECT value FROM settings WHERE key = ?", (key,)
-        ).fetchone()
-        if cur is None:
-            return default
-        return cur["value"] or default
-    except Exception:
-        return default
+    from pycal.settings import get_setting
+    return get_setting(key, default)
 
 
 def _save_setting(key: str, value: str) -> None:
-    try:
-        open_default().execute(
-            "INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)",
-            (key, value),
-        )
-    except Exception as e:
-        print(f"[setting] save failed: {e}")
+    from pycal.settings import set_setting
+    set_setting(key, value)
 
 
 def _db_location() -> str:
@@ -1300,6 +1440,18 @@ def _build_tray(win: QMainWindow, app: QApplication) -> Optional[QSystemTrayIcon
     act_search = QAction("搜索…", tray)
     act_search.triggered.connect(lambda: _search_dialog(win))
     menu.addAction(act_search)
+    # 桌面挂件 — 主窗藏起来以后, 靠这个还能把它叫出来
+    act_widget = QAction("桌面挂件", tray)
+    act_widget.setCheckable(True)
+    act_widget.setChecked(
+        getattr(win, "_widget_mgr", None) is not None
+        and win._widget_mgr.visible())
+    act_widget.setToolTip("贴在桌面层的小月历 (壁纸透出来那种)")
+    def _toggle_widget():
+        win._toggle_widget()
+        act_widget.setChecked(win._widget_mgr.visible())
+    act_widget.triggered.connect(_toggle_widget)
+    menu.addAction(act_widget)
     menu.addSeparator()
     act_quit = QAction("退出 PyCal", tray)
     def _quit():

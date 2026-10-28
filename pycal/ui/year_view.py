@@ -64,6 +64,9 @@ class MiniMonth(QWidget):
         self._selected = False
         self._today = date.today().isoformat()
         self._days = self._build_days()
+        # QFont 缓存 — 画一个月要 setFont 40 多次, 每次新建一个 QFont
+        # 挺浪费的 (QFont 构造要查字体数据库)。按 (字号, 加粗) 缓存。
+        self._font_cache: dict[tuple[int, bool], QFont] = {}
 
         self.setMinimumHeight(self._fonts.mini_h)
         self.setSizePolicy(QSizePolicy.Policy.Expanding,
@@ -94,9 +97,14 @@ class MiniMonth(QWidget):
         return r, title_h, head_h, cell_w, cell_h
 
     def _font(self, pt: int, bold: bool = False) -> QFont:
-        f = QFont()
-        f.setPointSize(pt)
-        f.setBold(bold)
+        """按 (字号, 加粗) 取字体 — 复用同一个 QFont, 别每次都新建。"""
+        key = (pt, bold)
+        f = self._font_cache.get(key)
+        if f is None:
+            f = QFont()
+            f.setPointSize(pt)
+            f.setBold(bold)
+            self._font_cache[key] = f
         return f
 
     # ------------------------------------------------------------------
@@ -234,6 +242,7 @@ class MiniMonth(QWidget):
 
     def apply_fonts(self, fonts: Fonts) -> None:
         self._fonts = fonts
+        self._font_cache.clear()     # 字号变了, 缓存里的字体作废
         self.setMinimumHeight(fonts.mini_h)
         self.update()
 

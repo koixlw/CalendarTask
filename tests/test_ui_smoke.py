@@ -79,7 +79,8 @@ def main() -> int:
     check("「更多」菜单含全部功能",
           lambda: None if all(
               any(k in a.text() for a in mw._btn_more.menu().actions())
-              for k in ("云同步", "便签", "导入", "皮肤", "壁纸", "帮助")
+              for k in ("云同步", "便签", "导入", "皮肤", "壁纸", "帮助",
+                        "API key")
           ) else (_ for _ in ()).throw(AssertionError("菜单缺功能项")))
 
     print("\n=== 对话框 ===")
@@ -89,6 +90,7 @@ def main() -> int:
     from pycal.ui.sync_dialog import SyncDialog
     from pycal.ui.editor import ItemEditorDialog
     from pycal.ui.color_picker import ColorPickerDropdown
+    from pycal.ui.settings_dialog import SettingsDialog
 
     check("ReportDialog", lambda: ReportDialog())
     check("PolishDialog", lambda: PolishDialog("# 报告\n- [x] 完成项"))
@@ -96,6 +98,7 @@ def main() -> int:
     check("SyncDialog", lambda: SyncDialog())
     check("ItemEditorDialog", lambda: ItemEditorDialog())
     check("ColorPickerDropdown", lambda: ColorPickerDropdown())
+    check("SettingsDialog (API key 配置)", lambda: SettingsDialog())
 
     print("\n=== 模块导入完整性 ===")
     import importlib

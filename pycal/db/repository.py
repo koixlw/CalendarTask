@@ -36,6 +36,14 @@ def list_items_by_date(con: sqlite3.Connection, date_iso: str) -> list[CalendarI
     return [_row_to_item(r) for r in cur.fetchall()]
 
 
+def items_from_rows(rows: Iterable[sqlite3.Row]) -> list[CalendarItem]:
+    """把一批查询结果转成条目 — 调用方已经拿到 rows 时用这个,
+
+    免得再一条一条 get_item() 查一遍 (那是 N+1 次查询)。
+    """
+    return [_row_to_item(r) for r in rows]
+
+
 def list_items_in_range(
     con: sqlite3.Connection, start_iso: str, end_iso: str,
 ) -> list[CalendarItem]:

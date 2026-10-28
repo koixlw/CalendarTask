@@ -144,10 +144,9 @@ def main() -> int:
     today_cell = win._month_left._cells[TODAY]
     base = fonts_for(DEFAULT_SCALE)
 
-    check("月视图有两层, 格数一致且是整周数", lambda: _assert(
-        len(cells) in (28, 35, 42)
-        and len(win._month_right._cells) == len(cells),
-        f"{len(cells)} / {len(win._month_right._cells)}",
+    check("月视图格数是整周数", lambda: _assert(
+        len(cells) in (28, 35, 42),
+        f"{len(cells)}",
     ))
     check("默认档: 条目行 8pt / 行高 15px", lambda: _assert(
         today_cell._fonts.row == base.row
@@ -166,15 +165,26 @@ def main() -> int:
         f"可见 {_shown_rows(today_cell)} 行",
     ))
 
-    # 用户选「巨大」— 两层月视图都得变, 且不用翻月
+    # 用户选「巨大」— 现有的月视图都得变, 且不用翻月
     win._set_font_scale(1.5)
     app.processEvents()
     big = fonts_for(1.5)
-    check("两层月视图的格子都变大了", lambda: _assert(
+
+    def _live_views(w):
+        """当前存在的月视图 — 翻月动画那块是第一次翻月时才建的。"""
+        out = [w._month_left]
+        if w._idle_month_view is not None:
+            out.append(w._idle_month_view)
+        return out
+
+    check("所有月视图的格子都变大了", lambda: _assert(
         all(c._fonts.row == big.row
-            for c in win._month_left._cells.values())
-        and all(c._fonts.row == big.row
-                for c in win._month_right._cells.values()),
+            for v in _live_views(win)
+            for c in v._cells.values()),
+    ))
+    check("之后才建的动画层也带新字号", lambda: _assert(
+        all(c._fonts.row == big.row
+            for c in win._ensure_idle_month_view()._cells.values()),
     ))
     check("已有的行跟着放大 (不是只管新格子)", lambda: _assert(
         today_cell._rows[0]._font.pointSize() == big.row

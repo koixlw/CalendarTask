@@ -39,7 +39,10 @@ _FEATURES: list[tuple[str, str, str, str]] = [
     ("日报 / 周报", "工具栏「📑 日报」", "Ctrl+R",
      "预览后复制, 或导出 MD / HTML / PDF。每天 18:00 后还会自动生成一份。"),
     ("AI 润色", "工具栏「✨ AI 日报」", "Ctrl+Shift+R",
-     "用 Claude 把日报/周报改写得更通顺。需要先配好 ANTHROPIC_API_KEY。"),
+     "用 Claude 把日报/周报改写得更通顺。需要先配好 API key。"),
+    ("配 API key", "⋯ 更多 → 🔑 AI 润色 API key", "Ctrl+,",
+     "把 Anthropic API key 填进去就能用 AI 润色 —— 不用再改环境变量, "
+     "存好立刻生效, 不用重启。"),
     ("云同步", "⋯ 更多 → 云同步", "Ctrl+S",
      "CalDAV 双向同步, 支持 Google / iCloud / Outlook / 自建服务器。"),
     ("便签", "⋯ 更多 → 便签", "—", "开一个随手记的小窗口, 单独保存在本机。"),
@@ -72,6 +75,7 @@ _SHORTCUTS: list[tuple[str, str]] = [
     ("Ctrl+Shift+R", "AI 润色日报"),
     ("Ctrl+S", "打开云同步"),
     ("Ctrl+T", "回到今天"),
+    ("Ctrl+,", "打开设置 (配 API key)"),
     ("F5", "重新拉取数据"),
     ("Esc", "关闭窗口 (同 Alt+F4, 行为可在「⋯ 更多」里改)"),
 ]
@@ -116,7 +120,8 @@ class HelpDialog(QDialog):
             ("③ 出日报 / 周报",
              "点工具栏「📑 日报」自动汇总当天（或本周）完成的事，"
              "可以预览、复制，或导出成 Markdown / HTML / PDF。"
-             "配好 Anthropic API key 后还能用「✨ AI 日报」让 Claude 润色一遍。"),
+             "在「⋯ 更多 → 🔑 AI 润色 API key」里填一次 API key，"
+             "之后还能用「✨ AI 日报」让 Claude 润色一遍。"),
             ("④ 关窗口不等于退出",
              "点「— 收起」或按 Alt+F4，窗口会藏到右下角托盘，"
              "<b>程序仍在后台运行</b>，提醒和自动同步照常。"

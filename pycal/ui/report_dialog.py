@@ -71,10 +71,15 @@ class ReportDialog(QDialog):
         self._btn_ai.setToolTip(
             "用 Claude 把这份报告改写得更通顺\n"
             "可选风格: 简洁精炼 / 专业正式 / 轻松友好 / 带复盘分析\n"
-            "需要环境变量 ANTHROPIC_API_KEY"
+            "需要 Anthropic API key"
         )
         self._btn_ai.clicked.connect(self._open_ai_polish)
         top.addWidget(self._btn_ai)
+        # 没配 key 时, 旁边给个入口直接去配 —— 总不能让人跑去翻菜单
+        self._btn_key = QPushButton("🔑 API key")
+        self._btn_key.setToolTip("填 Anthropic API key (Ctrl+,)")
+        self._btn_key.clicked.connect(self._open_key_settings)
+        top.addWidget(self._btn_key)
         top.addSpacing(16)
 
         self._btn_prev = QPushButton("◀")
@@ -111,6 +116,9 @@ class ReportDialog(QDialog):
         if not has_api_key():
             self._btn_ai.setText("✨ AI 润色 (需 API key)")
             self._btn_ai.setEnabled(False)
+        else:
+            # 已经配好了就不用再摆这个按钮, 免得占地方还让人以为缺 key
+            self._btn_key.setVisible(False)
 
         # 摘要条
         self._summary = QLabel("")
@@ -224,6 +232,18 @@ class ReportDialog(QDialog):
                 f"完成率 <b>{rate:.0f}%</b>"
             )
         self._status.setText(f"字数 {len(md)} · 渲染于 {date.today()}")
+
+    # ------------------------------------------------------------------
+    def _open_key_settings(self) -> None:
+        """开设置窗口配 API key —— 关掉后把「AI 润色」按钮的可用状态刷回来。"""
+        from pycal.ui.settings_dialog import SettingsDialog
+        dlg = SettingsDialog(self)
+        dlg.exec()
+        from pycal.report.ai_polish import has_api_key
+        if has_api_key():
+            self._btn_ai.setEnabled(True)
+            self._btn_ai.setText("✨ AI 润色")
+            self._btn_key.setVisible(False)
 
     # ------------------------------------------------------------------
     def _open_ai_polish(self) -> None:

@@ -53,11 +53,14 @@ HIDDEN_IMPORTS = [
     "pycal.ui.main_window", "pycal.ui.month_view", "pycal.ui.editor",
     "pycal.ui.search_dialog", "pycal.ui.sync_dialog", "pycal.ui.report_dialog",
     "pycal.ui.color_picker", "pycal.ui.floating_window", "pycal.ui.skin",
+    "pycal.ui.settings_dialog", "pycal.ui.ai_polish_dialog",
+    "pycal.ui.desktop_widget", "pycal.ui.outline_label",
 
     # 功能模块
     "pycal.notes", "pycal.notifier", "pycal.report", "pycal.lunar",
     "pycal.desktop.wallpaper", "pycal.desktop.autostart", "pycal.installer",
     "pycal.sync", "pycal.sync.__main__", "pycal.report.__main__",
+    "pycal.settings",
 
     # CalDAV / iCal
     "caldav", "icalendar", "recurring_ical_events",

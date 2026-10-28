@@ -32,7 +32,7 @@ from typing import Callable, Optional
 
 from pycal.db.connection import open_default
 from pycal.db.models import CalendarItem, RepeatRule, Reminder, Countdown
-from pycal.db.repository import upsert_item, get_item
+from pycal.db.repository import upsert_item, get_item, items_from_rows
 from pycal.sync.accounts import (
     SyncAccount, get_link, set_link, links_for_account,
     mark_synced, init_sync_schema,
@@ -174,21 +174,15 @@ class SyncEngine:
     def _push_local_changes(self, client, links, remote_by_uid) -> None:
         """检查本地改动并推上去。"""
         r = self.result
-        rows = self.con.execute(
-            "SELECT item_id FROM calendar_items WHERE group_id = ? "
-            "OR group_id IS NULL",
-            (f"caldav:{self.account.account_id}",),
-        ).fetchall()
-        # 更稳妥: 取所有本地 item (含纯本地的, 但只推有 link 或 caldav group 的)
         # MVP: 推所有本地 item (用户主动点了同步)
-        rows = self.con.execute("SELECT item_id FROM calendar_items").fetchall()
+        # 一次把整张表读出来, 别一条一条 get_item —— 那等于 N+1 次查询,
+        # 本地条目一多, 同步光查库就要好几秒 (而且卡在 UI 线程上)。
+        rows = self.con.execute("SELECT * FROM calendar_items").fetchall()
+        local_items = items_from_rows(rows)
 
         pushed = 0
-        for row in rows:
-            item_id = row["item_id"]
-            item = get_item(self.con, item_id)
-            if item is None:
-                continue
+        for item in local_items:
+            item_id = item.item_id
             link = links.get(item_id)
             remote = remote_by_uid.get(item_id)
 

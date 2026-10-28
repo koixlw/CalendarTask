@@ -7,7 +7,9 @@
   - **流式输出** — 长报告边生成边显示, 不卡 UI
 
 安全:
-  - API key 只从环境变量 ANTHROPIC_API_KEY 读, 不落盘、不写日志
+  - API key 可以在界面里填 (存 settings 表, base64 + XOR 打乱,
+    只防"随手打开 DB 看到明文"), 也认环境变量 ANTHROPIC_API_KEY
+  - key 不写日志, 不进异常信息
   - 原始报告可能含私人日程, 调用前提示用户
 
 成本参考 (Sonnet 5 / Haiku 4.5, 2026 定价):
@@ -18,6 +20,7 @@
 
 from __future__ import annotations
 
+import base64
 import os
 import sys
 from dataclasses import dataclass, field
@@ -90,18 +93,107 @@ class PolishError(Exception):
 
 
 # ============================================================================
-# API key
+# API key — 界面里填的存 settings 表, 环境变量当后备
 # ============================================================================
+# 界面里填的 key 存在 settings 表 (跟皮肤/字号放一起), 用 base64 + XOR
+# 打乱一下 —— 只防"随手打开 DB 看到明文", 不是强加密。
+# 想要更强的保护得走 Windows 凭据管理器, 那是另一个量级的工程。
+KEY_SETTING = "anthropic_api_key"
+_XOR_KEY = b"pycal-api-v1"
+
+
+def _obfuscate(plain: str) -> str:
+    if not plain:
+        return ""
+    data = plain.encode("utf-8")
+    xored = bytes(b ^ _XOR_KEY[i % len(_XOR_KEY)] for i, b in enumerate(data))
+    return base64.b64encode(xored).decode("ascii")
+
+
+def _deobfuscate(encoded: str) -> str:
+    if not encoded:
+        return ""
+    try:
+        xored = base64.b64decode(encoded.encode("ascii"))
+        data = bytes(b ^ _XOR_KEY[i % len(_XOR_KEY)] for i, b in enumerate(xored))
+        return data.decode("utf-8")
+    except Exception:
+        return ""
+
+
+def _setting_get(key: str) -> str:
+    """读 settings 表 — 数据库还没建好/坏了都当没配。"""
+    try:
+        from pycal.db.connection import open_default
+        row = open_default().execute(
+            "SELECT value FROM settings WHERE key = ?", (key,)
+        ).fetchone()
+        return (row["value"] if row else "") or ""
+    except Exception:
+        return ""
+
+
+def _setting_set(key: str, value: str) -> None:
+    from pycal.db.connection import open_default
+    open_default().execute(
+        "INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)",
+        (key, value),
+    )
+
+
+def env_api_key() -> str:
+    """环境变量里的 key (没设就是空串)。"""
+    return os.environ.get("ANTHROPIC_API_KEY", "").strip()
+
+
+def load_api_key() -> str:
+    """读界面里保存的 key (已解密)。"""
+    return _deobfuscate(_setting_get(KEY_SETTING)).strip()
+
+
+def save_api_key(key: str) -> None:
+    """保存 key —— 界面上「保存」按钮调的。"""
+    _setting_set(KEY_SETTING, _obfuscate(key.strip()))
+
+
+def clear_api_key() -> None:
+    """删掉界面里保存的 key (环境变量不受影响)。"""
+    _setting_set(KEY_SETTING, "")
+
+
+def resolve_api_key() -> str:
+    """当前生效的 key —— 界面里存的优先, 其次环境变量。
+
+    界面里存的排前面: 用户明明在框里填了一个新 key, 结果还是拿环境变量
+    里那个旧的跑, 那才叫莫名其妙。
+    """
+    return load_api_key() or env_api_key()
+
+
+def api_key_source() -> str:
+    """key 从哪来 —— "saved" (界面里存的) / "env" (环境变量) / "" (没有)。"""
+    if load_api_key():
+        return "saved"
+    if env_api_key():
+        return "env"
+    return ""
+
+
 def has_api_key() -> bool:
-    return bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
+    return bool(resolve_api_key())
 
 
 def api_key_hint() -> str:
     if has_api_key():
-        return "✓ 已配置 ANTHROPIC_API_KEY"
+        src = api_key_source()
+        if src == "saved":
+            return "✓ 已配置 API key (保存在本机)"
+        return "✓ 已配置 ANTHROPIC_API_KEY (环境变量)"
     return (
         "未配置 API key。\n\n"
-        "设置方法 (PowerShell, 当前会话有效):\n"
+        "最快的方式 — 在 PyCal 界面里填:\n"
+        "  点工具栏「⋯ 更多」→「🔑 AI 润色 API key」, 粘进去保存即可。\n\n"
+        "命令行方式 (PowerShell, 当前会话有效):\n"
         "  $env:ANTHROPIC_API_KEY = \"sk-ant-...\"\n\n"
         "永久设置 (用户级):\n"
         "  [Environment]::SetEnvironmentVariable(\n"
@@ -219,19 +311,23 @@ class ClaudePolishClient:
 
     MAX_TOKENS = 8192
 
-    def __init__(self, model: str = MODEL_DEFAULT, timeout: float = 120.0):
+    def __init__(self, model: str = MODEL_DEFAULT, timeout: float = 120.0,
+                 api_key: str = ""):
         self.model = model
         self.timeout = timeout
+        # 显式传入的 key 优先 — 界面里"测试连接"就是这么试还没保存的那一串
+        self._api_key = api_key.strip()
         self._client = None
 
     def _get_client(self):
         if self._client is not None:
             return self._client
-        key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        key = self._api_key or resolve_api_key()
         if not key:
             raise PolishError(
-                "未配置 ANTHROPIC_API_KEY",
-                "设置环境变量后重试。见 api_key_hint() 的说明。",
+                "未配置 API key",
+                "在「⋯ 更多 → 🔑 AI 润色 API key」里填一下, "
+                "或设好 ANTHROPIC_API_KEY 环境变量。",
             )
         try:
             import anthropic
@@ -345,7 +441,8 @@ def _wrap_error(e: Exception, model: str = "") -> PolishError:
     if "AuthenticationError" in name or "401" in msg:
         return PolishError(
             "API key 无效 (401)",
-            "检查 ANTHROPIC_API_KEY 是否正确且未过期。",
+            "检查 key 是不是写错了/过期了 — "
+            "可以在「⋯ 更多 → 🔑 AI 润色 API key」里重新填。",
         )
     if "PermissionDenied" in name or "403" in msg:
         return PolishError(
@@ -405,7 +502,9 @@ def polish_multiple_styles(
 __all__ = [
     "Style", "STYLES", "DEFAULT_STYLES",
     "PolishError", "PolishResult", "ClaudePolishClient",
-    "has_api_key", "api_key_hint",
+    "has_api_key", "api_key_hint", "api_key_source",
+    "load_api_key", "save_api_key", "clear_api_key",
+    "resolve_api_key", "env_api_key",
     "build_user_prompt", "polish_multiple_styles",
     "MODEL_DEFAULT", "MODEL_FAST", "MODEL_SMART", "SYSTEM_PROMPT",
 ]

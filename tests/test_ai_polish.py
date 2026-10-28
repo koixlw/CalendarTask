@@ -88,14 +88,20 @@ def test_no_api_key():
         has_api_key, api_key_hint, ClaudePolishClient, PolishError,
     )
     # 模拟未配置 (不改真实环境, 用 monkeypatch 式的局部检查)
+    # 注意: 现在 key 可能存在本机 settings 表里 (界面里填的),
+    # 所以要把「解析 key」整个换掉, 光 pop 环境变量不够 ——
+    # 否则用户配过 key 之后这个测试就红了。
     import pycal.report.ai_polish as mod
-    old = mod.os.environ.get("ANTHROPIC_API_KEY")
+    old_env = mod.os.environ.get("ANTHROPIC_API_KEY")
+    old_resolve = mod.resolve_api_key
     mod.os.environ.pop("ANTHROPIC_API_KEY", None)
+    mod.resolve_api_key = lambda: ""
     try:
         check("has_api_key 返回 False", has_api_key() is False)
         hint = api_key_hint()
         check("hint 提到环境变量名", "ANTHROPIC_API_KEY" in hint)
         check("hint 提到获取链接", "console.anthropic.com" in hint)
+        check("hint 提到界面入口", "⋯ 更多" in hint or "API key" in hint)
 
         # 调用应该抛 PolishError 而不是别的
         try:
@@ -109,8 +115,61 @@ def test_no_api_key():
             check("无 key 时抛 PolishError", False,
                   f"抛了 {type(e).__name__}")
     finally:
-        if old is not None:
-            mod.os.environ["ANTHROPIC_API_KEY"] = old
+        mod.resolve_api_key = old_resolve
+        if old_env is not None:
+            mod.os.environ["ANTHROPIC_API_KEY"] = old_env
+
+
+def test_key_store():
+    """界面里填的 key —— 存 / 取 / 清除, 以及跟环境变量的优先级。"""
+    print("\n=== 4b. API key 存取 ===")
+    import pycal.report.ai_polish as mod
+    import pycal.db.connection as conn_mod
+    from pathlib import Path
+    import tempfile
+
+    # 换成临时数据库, 别把测试 key 写进用户真的库
+    tmp_db = Path(tempfile.mkdtemp(prefix="pycal_key_")) / "t.db"
+    old_open = conn_mod.open_default
+    conn_mod.open_default = lambda: conn_mod.open_connection(tmp_db)
+    old_env = mod.os.environ.get("ANTHROPIC_API_KEY")
+    old_resolve = mod.resolve_api_key
+    try:
+        mod.os.environ.pop("ANTHROPIC_API_KEY", None)
+
+        check("初始没有 key", mod.has_api_key() is False)
+        check("初始来源为空", mod.api_key_source() == "")
+
+        mod.save_api_key("sk-ant-test-123")
+        check("保存后能读回来", mod.load_api_key() == "sk-ant-test-123")
+        check("保存后 has_api_key 为真", mod.has_api_key() is True)
+        check("来源标记为 saved", mod.api_key_source() == "saved")
+        check("明文没直接进 settings",
+              "sk-ant-test-123" not in mod._setting_get(mod.KEY_SETTING))
+
+        # 环境变量也有 key 时, 界面里存的优先
+        mod.os.environ["ANTHROPIC_API_KEY"] = "sk-ant-from-env"
+        check("界面里的 key 优先于环境变量",
+              mod.resolve_api_key() == "sk-ant-test-123",
+              f"got {mod.resolve_api_key()}")
+        check("来源仍是 saved", mod.api_key_source() == "saved")
+
+        # 界面里删掉 -> 退回环境变量
+        mod.clear_api_key()
+        check("清除后读不到", mod.load_api_key() == "")
+        check("清除后退回环境变量",
+              mod.resolve_api_key() == "sk-ant-from-env",
+              f"got {mod.resolve_api_key()}")
+        check("来源变成 env", mod.api_key_source() == "env")
+
+        # 环境变量也没有时就是彻底没配
+        mod.os.environ.pop("ANTHROPIC_API_KEY", None)
+        check("都没配时 has_api_key 为假", mod.has_api_key() is False)
+    finally:
+        conn_mod.open_default = old_open
+        mod.resolve_api_key = old_resolve
+        if old_env is not None:
+            mod.os.environ["ANTHROPIC_API_KEY"] = old_env
 
 
 def test_empty_report():
@@ -181,6 +240,7 @@ def main() -> int:
     test_system_prompt()
     test_user_prompt()
     test_no_api_key()
+    test_key_store()
     test_empty_report()
     test_error_wrapping()
     test_cost_estimate()

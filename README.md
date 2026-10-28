@@ -49,9 +49,13 @@ e:\todo\
 │   │   ├── search_dialog.py        ← 5 下拉多维筛选面板 (Phase 1A)
 │   │   ├── sync_dialog.py          ← 云同步账号管理 (Phase 2)
 │   │   ├── floating_window.py      ← 可拖动 + 八向 resize
+│   │   ├── desktop_widget.py       ← 桌面挂件 (贴在桌面层, 壁纸透出来)
+│   │   ├── outline_label.py        ← 描边文字 (压在壁墙上也得看清)
 │   │   ├── skin.py                 ← 4 种皮肤 + 不透明度
 │   │   ├── fonts.py                ← 字号缩放 (行高 / 格子尺寸一起跟着走)
+│   │   ├── settings_dialog.py       ← 设置 (API key 配置入口)
 │   │   └── color_picker.py         ← 22 色调色板 + 自定义 BGR
+│   ├── settings.py                 ← settings 表读写 (主窗和挂件共用)
 │   ├── desktop/
 │   │   ├── wallpaper.py            ← 读取原壁纸 + 叠加月历 + SPI_SETDESKWALLPAPER
 │   │   └── autostart.py            ← HKCU Run + WScript.Shell .lnk
@@ -78,7 +82,8 @@ e:\todo\
 ├── tests/
 │   ├── test_smoke.py               ← 基础 CRUD + 搜索
 │   ├── test_sync.py                ← 46 项 (iCal round-trip / 冲突检测)
-│   └── test_report.py              ← 36 项 (日报/周报/HTML)
+│   ├── test_report.py              ← 36 项 (日报/周报/HTML)
+│   └── test_desktop_widget.py      ← 29 项 (桌面挂件: 透明皮肤/层级/字色/位置)
 │
 ├── assets/
 │   └── pycal.ico                   ← 7 尺寸应用图标 (运行时生成)
@@ -188,7 +193,21 @@ HTML 导出带内联 CSS + `@media print`，浏览器直接 Ctrl+P 就是 PDF。
 
 用 Claude 把日报/周报改写得更通顺、更专业或更有洞察。
 
-### 配置
+### 配置（界面里填就行）
+
+**界面入口**（推荐）：工具栏 `⋯ 更多 → 🔑 AI 润色 API key`（快捷键 `Ctrl+,`）。
+粘进去 → 保存 → 立刻生效，不用重启。
+
+其它两个入口都通向同一个设置窗口：
+
+- 点 `✨ AI 日报` 时没配 key → 弹窗里直接点「🔑 现在配置」
+- 报告窗口 / AI 润色窗口里的 `🔑 配置` 按钮
+
+Key 从 https://console.anthropic.com/settings/keys 获取。
+
+**存放方式**：填在界面里的 key 存在本机 PyCal 数据库的 `settings` 表里，
+用 base64 + XOR 打乱（跟 CalDAV 密码一个路子）—— 只防「随手打开 DB 看到明文」，
+不是强加密。想完全不留痕就删掉它，改用环境变量：
 
 ```powershell
 # 当前会话
@@ -198,7 +217,8 @@ $env:ANTHROPIC_API_KEY = "sk-ant-..."
 [Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", "sk-ant-...", "User")
 ```
 
-Key 从 https://console.anthropic.com/settings/keys 获取。**只从环境变量读，不落盘、不写日志。**
+界面里存的 key 优先于环境变量（改了环境变量不生效的话，先去设置里清一下界面里那个）。
+**key 不写日志、不进异常信息。**
 
 ### 用法
 
@@ -377,6 +397,28 @@ PyCal 默认驻留后台，提醒和自动同步靠它。关窗行为是：
 
 ## 桌面集成（贴在桌面上）
 
+### 桌面挂件（推荐）
+
+一个贴在**桌面层**的小月历 —— 屏幕角落，壁纸从格子缝里直接透出来，
+字自带描边所以在什么壁纸上都看得清。
+
+| 入口 | 位置 |
+|---|---|
+| 打开 | 工具栏「⋯ 更多 → 桌面挂件 (贴在桌面上的小日历)」 |
+| 开关 | 托盘图标右键 →「桌面挂件」 |
+| 设置 | 挂件标题栏「⋯」或标题栏右键 |
+
+- **贴在桌面层**（`WindowStaysOnBottomHint`）—— 别的窗口盖得住它，
+  不会跳出来抢你正在写的文档；想浮在最上面，菜单里切「永远置顶」
+- **拖标题栏**挪位置，位置记在 `settings` 里，重启还在
+- **字色跟着壁纸亮度自动反色** —— 亮壁纸用深字带白描边，暗壁纸用浅字带黑描边
+  （采样当前壁纸那块区域的平均亮度，见 `pycal.desktop.wallpaper.sample_brightness`）
+- 也能手动锁：菜单里选「深色字 / 浅色字」
+- 三个大小档（小 / 中 / 大）＝ 字号比例 70% / 85% / 100%
+- 跨零点自动翻到今天；勾选、编辑、右键菜单跟主窗一模一样
+
+### 壁纸叠加（老办法）
+
 `pycal.desktop.wallpaper.make_and_set_wallpaper()` 会：
 1. 用 QPainter 在屏幕右下角渲染本月日历面板
 2. 保存到 `%TEMP%/pycal_wallpaper_YYYYMM.png`
@@ -387,6 +429,11 @@ PyCal 默认驻留后台，提醒和自动同步靠它。关窗行为是：
 from pycal.desktop.wallpaper import render_calendar_panel
 img = render_calendar_panel(2026, 10)
 img.save("out.png")
+```
+
+想看挂件叠在真壁纸上是什么样：
+```bash
+python tools/shot_widget.py     # → build/widget_shot.png
 ```
 
 ## 数据兼容性
@@ -413,6 +460,7 @@ PyCal 与 DesktopCal 共存时：
 | **2: 云同步** | **CalDAV 双向同步 (Google / iCloud / Outlook / 通用) + 三方冲突解决 + 后台自动同步 + CLI + 管理 UI** | ✅ |
 | **日报/周报** | **从 calendar_items 聚合生成 Markdown/HTML，含完成率、每日矩阵、类型分布、关键词、倒数日；GUI 预览 + CLI + 定时自动生成** | **✅ 本轮** |
 | **4: 发布** | **PyInstaller 打包 (155MB onedir) + 多尺寸 .ico 图标 + HKCU Run 自启动 + 桌面快捷方式 + 卸载器** | **✅ 本轮** |
+| **桌面挂件** | **贴在桌面层的小月历：格子透明让壁纸透出来 + 描边文字 + 按壁纸亮度自动反色 + 可拖动可换层级** | **✅ 本轮** |
 
 ## 已知限制
 

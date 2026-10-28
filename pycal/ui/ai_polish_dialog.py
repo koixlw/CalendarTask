@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from pycal.report.ai_polish import (
-    STYLES, PolishError, ClaudePolishClient, has_api_key, api_key_hint,
+    STYLES, PolishError, ClaudePolishClient, has_api_key,
     MODEL_DEFAULT, MODEL_FAST, MODEL_SMART,
 )
 
@@ -106,7 +106,14 @@ class PolishDialog(QDialog):
         self._key_label.setStyleSheet(
             "padding: 6px; border-radius: 4px;"
         )
-        root.addWidget(self._key_label)
+        # 状态条 + 一个「配置」按钮 —— 没 key 时不必去翻菜单找设置
+        key_row = QHBoxLayout()
+        key_row.addWidget(self._key_label, 1)
+        self._btn_key = QPushButton("🔑 配置")
+        self._btn_key.setToolTip("填 Anthropic API key (Ctrl+,)")
+        self._btn_key.clicked.connect(self._open_key_settings)
+        key_row.addWidget(self._btn_key)
+        root.addLayout(key_row)
 
         # ── 风格 ──
         style_box = QGroupBox("润色风格 (可多选)")
@@ -204,26 +211,35 @@ class PolishDialog(QDialog):
         root.addLayout(btns)
 
     # ------------------------------------------------------------------
+    def _open_key_settings(self) -> None:
+        """开设置窗口填 key —— 关掉后立刻刷新下面的状态。"""
+        from pycal.ui.settings_dialog import SettingsDialog
+        dlg = SettingsDialog(self)
+        dlg.exec()
+        self._check_key()
+
+    # ------------------------------------------------------------------
     def _check_key(self) -> None:
         if has_api_key():
             self._key_label.setStyleSheet(
                 "background: #E8F8F0; color: #1E8449; padding: 6px;"
                 "border: 1px solid #A9DFBF; border-radius: 4px;"
             )
-            self._key_label.setText("✓ 已配置 ANTHROPIC_API_KEY")
+            self._key_label.setText("✓ 已配置 API key")
+            self._btn_polish.setEnabled(True)
         else:
             self._key_label.setStyleSheet(
                 "background: #FDEDEC; color: #922B21; padding: 6px;"
                 "border: 1px solid #F5B7B1; border-radius: 4px;"
             )
             self._key_label.setText(
-                "⚠ 未配置 API key — 设置环境变量 ANTHROPIC_API_KEY 后重开此窗口"
+                "⚠ 未配置 API key — 点右边「🔑 配置」填一下就能用"
             )
             self._btn_polish.setEnabled(False)
 
     def _test_connection(self) -> None:
         if not has_api_key():
-            QMessageBox.information(self, "缺少 API key", api_key_hint())
+            self._open_key_settings()
             return
         self._btn_test.setEnabled(False)
         self._btn_test.setText("测试中…")
@@ -249,7 +265,7 @@ class PolishDialog(QDialog):
             QMessageBox.warning(self, "未选风格", "至少选一种润色风格")
             return
         if not has_api_key():
-            QMessageBox.information(self, "缺少 API key", api_key_hint())
+            self._open_key_settings()
             return
 
         self._btn_polish.setEnabled(False)
