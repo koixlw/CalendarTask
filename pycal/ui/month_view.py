@@ -73,6 +73,35 @@ def _parse_lines(content: str) -> list[tuple[bool, str]]:
     return out
 
 
+def rows_for_display(
+    items: list[CalendarItem],
+) -> list[tuple[CalendarItem, str, bool, Optional[int]]]:
+    """把当天的条目摊平成可勾选的行: (条目, 文字, 已完成, line_idx)。
+
+    line_idx=None 表示这一行勾的是「整条完成」(is_completed 字段),
+    用于有标题但没有多行内容的条目, 以及重复/提醒/倒数日这类整条型条目。
+
+    月视图的格子和快捷待办面板都用这一份摊平逻辑 —— 两边看到的
+    条目顺序、勾选方式必须一致, 不然面板里勾了格子那边没反应。
+    """
+    out: list[tuple[CalendarItem, str, bool, Optional[int]]] = []
+    for it in items:
+        if it.type != 0:
+            title = it.title or (
+                it.content.splitlines()[0] if it.content else "(无标题)"
+            )
+            out.append((it, f"{_glyph_for_type(it.type)} {title}",
+                        bool(it.is_completed), None))
+            continue
+        lines = _parse_lines(it.content)
+        if lines:
+            for idx, (completed, text) in enumerate(lines):
+                out.append((it, text, completed, idx))
+        elif it.title:
+            out.append((it, it.title, bool(it.is_completed), None))
+    return out
+
+
 # ============================================================================
 # 配色 — 由皮肤派生 (深色皮肤下格子不再白底黑字)
 # ============================================================================
@@ -561,27 +590,8 @@ class DayCell(QFrame):
 
     # ------------------------------------------------------------------
     def _rows_for_display(self) -> list[tuple[CalendarItem, str, bool, Optional[int]]]:
-        """把当天的条目摊平成可勾选的行: (条目, 文字, 已完成, line_idx)。
-
-        line_idx=None 表示这一行勾的是「整条完成」(is_completed 字段),
-        用于有标题但没有多行内容的条目, 以及重复/提醒/倒数日这类整条型条目。
-        """
-        out: list[tuple[CalendarItem, str, bool, Optional[int]]] = []
-        for it in self._items:
-            if it.type != 0:
-                title = it.title or (
-                    it.content.splitlines()[0] if it.content else "(无标题)"
-                )
-                out.append((it, f"{_glyph_for_type(it.type)} {title}",
-                            bool(it.is_completed), None))
-                continue
-            lines = _parse_lines(it.content)
-            if lines:
-                for idx, (completed, text) in enumerate(lines):
-                    out.append((it, text, completed, idx))
-            elif it.title:
-                out.append((it, it.title, bool(it.is_completed), None))
-        return out
+        """把当天的条目摊平成可勾选的行 —— 逻辑在模块级的 rows_for_display。"""
+        return rows_for_display(self._items)
 
     def _refresh(self) -> None:
         # 类型图标: 第一个非格子条目的类型

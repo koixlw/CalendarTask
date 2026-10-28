@@ -173,6 +173,11 @@ class PyCalMainWindow(FloatingWindow):
         from pycal.ui.desktop_widget import DesktopWidgetManager
         self._widget_mgr = DesktopWidgetManager(self)
 
+        # 快捷待办面板 — 点托盘图标弹出来的小窗口。
+        # 同样得在 _build_ui 之前建 —— 工具栏菜单里要挂它的开关项。
+        from pycal.ui.quick_panel import QuickPanelManager
+        self._quick_mgr = QuickPanelManager(self)
+
         # 应用皮肤 + 不透明度
         self._apply_skin()
 
@@ -681,6 +686,11 @@ class PyCalMainWindow(FloatingWindow):
         if yv is not None:
             yv.refresh()
         self._update_count()
+        # 快捷待办面板开着的话也刷一遍 —— 两边看的是同一份数据,
+        # 在格子那边勾了, 面板里也得跟着变
+        qm = getattr(self, "_quick_mgr", None)
+        if qm is not None and qm.visible():
+            qm.panel.refresh()
 
     # ------------------------------------------------------------------
     # 标签/计数
@@ -801,6 +811,14 @@ class PyCalMainWindow(FloatingWindow):
         section("常用")
         item("年视图 / 月视图", "一屏看全年 12 个月, 下面是选中月的详情",
              self._toggle_year_view_from_menu, "Y")
+        quick_act = item("快捷待办小窗…",
+                         "弹一个小窗口出来, 随手记一条待办\n"
+                         "整个面板能随便拖, 位置会记住\n"
+                         "(托盘图标单击一下也是它)",
+                         self._toggle_quick_panel)
+        quick_act.setCheckable(True)
+        quick_act.setChecked(
+            self._quick_mgr is not None and self._quick_mgr.visible())
         item("搜索全部条目…", "在所有日期的所有条目里找关键词",
              self._open_search, "Ctrl+F")
         item("生成日报 / 周报…", "预览、复制, 或导出成 MD / HTML / PDF",
@@ -1010,6 +1028,13 @@ class PyCalMainWindow(FloatingWindow):
         # 推到下一轮事件循环再重建, 菜单已经关了才安全。
         QTimer.singleShot(0, self._refresh_more_menu)
 
+    def _toggle_quick_panel(self) -> None:
+        """开关快捷待办小窗 —— 跟点托盘图标一个效果。"""
+        if self._quick_mgr is None:
+            return
+        self._quick_mgr.toggle()
+        QTimer.singleShot(0, self._refresh_more_menu)
+
     def _apply_topmost(self) -> None:
         flags = self.windowFlags()
         if self._topmost:
@@ -1197,7 +1222,8 @@ class PyCalMainWindow(FloatingWindow):
             self._tray.showMessage(
                 "PyCal 已收起到后台",
                 "提醒和自动同步仍在运行。\n"
-                "双击右下角托盘图标可以重新打开, 点托盘图标右键菜单的"
+                "单击右下角托盘图标能弹「快捷待办」小窗, "
+                "双击重新打开主窗口, 点托盘图标右键菜单的"
                 "「退出 PyCal」可彻底结束。",
                 QSystemTrayIcon.MessageIcon.Information,
                 4000,
@@ -1425,7 +1451,7 @@ def _build_tray(win: QMainWindow, app: QApplication) -> Optional[QSystemTrayIcon
         # 否则 closeEvent 会把窗口藏起来, 用户再也找不回来。
         return None
     tray = QSystemTrayIcon(_make_app_icon(), win)
-    tray.setToolTip("PyCal — 桌面日历")
+    tray.setToolTip("PyCal — 桌面日历\n单击: 快捷待办\n双击: 打开主窗口")
     menu = QMenu()
     act_show = QAction("显示 / 隐藏主窗", tray)
     def _show_hide():
@@ -1437,6 +1463,15 @@ def _build_tray(win: QMainWindow, app: QApplication) -> Optional[QSystemTrayIcon
             win.activateWindow()
     act_show.triggered.connect(_show_hide)
     menu.addAction(act_show)
+    # 快捷待办 — 单击托盘图标弹出来的小窗口, 随手记一条
+    act_quick = QAction("快捷待办", tray)
+    act_quick.setCheckable(True)
+    act_quick.setToolTip("弹一个小窗口出来, 随手记一条待办")
+    def _toggle_quick():
+        win._quick_mgr.toggle()
+        act_quick.setChecked(win._quick_mgr.visible())
+    act_quick.triggered.connect(_toggle_quick)
+    menu.addAction(act_quick)
     act_search = QAction("搜索…", tray)
     act_search.triggered.connect(lambda: _search_dialog(win))
     menu.addAction(act_search)
@@ -1452,6 +1487,12 @@ def _build_tray(win: QMainWindow, app: QApplication) -> Optional[QSystemTrayIcon
         act_widget.setChecked(win._widget_mgr.visible())
     act_widget.triggered.connect(_toggle_widget)
     menu.addAction(act_widget)
+    # 菜单每次弹出前对一下勾 —— 面板和挂件也可能是从别处关掉的,
+    # 勾留在那儿不动就骗人了
+    menu.aboutToShow.connect(lambda: (
+        act_quick.setChecked(win._quick_mgr.visible()),
+        act_widget.setChecked(win._widget_mgr.visible()),
+    ))
     menu.addSeparator()
     act_quit = QAction("退出 PyCal", tray)
     def _quit():
@@ -1460,11 +1501,19 @@ def _build_tray(win: QMainWindow, app: QApplication) -> Optional[QSystemTrayIcon
     act_quit.triggered.connect(_quit)
     menu.addAction(act_quit)
     tray.setContextMenu(menu)
-    tray.activated.connect(
-        lambda reason: _show_hide()
-        if reason == QSystemTrayIcon.ActivationReason.Trigger
-        else None
-    )
+
+    def _on_activated(reason):
+        # 单击 → 快捷待办小窗; 双击 → 主窗口 (帮助里就是这么写的)。
+        # 双击时 Windows 会先发一次单击, 所以双击时把小窗收掉, 别两个都杵着。
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            win._quick_mgr.toggle()
+        elif reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            win._quick_mgr.hide()
+            win.showNormal()
+            win.raise_()
+            win.activateWindow()
+
+    tray.activated.connect(_on_activated)
     tray.show()
     return tray
 
