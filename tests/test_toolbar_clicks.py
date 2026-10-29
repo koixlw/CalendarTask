@@ -22,6 +22,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from pycal.console import setup_stdout
+# Windows 中文控制台默认 GBK, 打印 ✓/◀/☐ 会抛 UnicodeEncodeError
+setup_stdout()
+
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ["APPDATA"] = tempfile.mkdtemp(prefix="pycal_click_")
 
@@ -150,6 +155,7 @@ def main() -> int:
         "_quit_app", "_set_skin", "_set_opacity",
         "_toggle_year_view_from_menu", "_open_settings",
         "_toggle_widget", "_toggle_quick_panel",
+        "toggle_maximized", "_toggle_startup_full",
     ]
     hit: list[str] = []
     saved = {n: getattr(win, n) for n in SPY_TARGETS}

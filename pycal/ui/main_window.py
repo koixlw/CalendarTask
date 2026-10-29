@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QGridLayout, QLabel,
     QVBoxLayout, QHBoxLayout, QPushButton, QFrame, QStatusBar,
     QMenu, QMessageBox, QToolButton, QSystemTrayIcon, QSlider,
-    QButtonGroup, QScrollArea,
+    QButtonGroup, QScrollArea, QSizePolicy,
 )
 
 from pycal.db.connection import open_default
@@ -321,7 +321,11 @@ class PyCalMainWindow(FloatingWindow):
         self._count_label = QLabel("0 项")
         self._opacity_label = QLabel("100%")
         self._anim_label = QLabel("动画 开")
-        self._hint_label = QLabel("单击 ☐ 打勾 · 双击文字编辑 · 右键更多")
+        self._hint_label = QLabel(
+            "单击 ☐ 打勾 · 双击文字编辑 · 右键更多 · F11 收成窗口可自由缩放")
+        # 提示文字不参与算窗口的最小宽度 —— 否则这行字越长, 窗口就缩不窄
+        self._hint_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         status.addWidget(self._hint_label, 1)
         status.addPermanentWidget(self._count_label)
         status.addPermanentWidget(self._anim_label)
@@ -373,7 +377,8 @@ class PyCalMainWindow(FloatingWindow):
             (self._btn_min, "收起窗口到托盘\n程序继续在后台运行, 提醒照常弹出\n(想彻底退出请点「× 退出」)"),
             (self._btn_max, "铺满屏幕 / 收成窗口\n"
                             "收成窗口之后拖四边和四角就能自由缩放\n"
-                            "也可双击工具栏空白处"),
+                            "铺满模式下不能拖边缩放 —— 那时拖的是屏幕边缘\n"
+                            "快捷键 F11, 也可双击工具栏空白处"),
             (self._btn_exit, "彻底退出 PyCal\n后台提醒和自动同步都会停止"),
         ]:
             b.setToolTip(tip)
@@ -390,6 +395,7 @@ class PyCalMainWindow(FloatingWindow):
             ("Ctrl+S", self._open_sync),
             ("Y", self._toggle_year_view_from_menu),
             ("Ctrl+,", self._open_settings),
+            ("F11", self.toggle_maximized),
         ]:
             QShortcut(QKeySequence(key), self, activated=slot)
 
@@ -662,6 +668,8 @@ class PyCalMainWindow(FloatingWindow):
             self.setGeometry(scr)
         self.showNormal()
         self._apply_toolbar_compact()
+        # 菜单里的勾选态跟着变 (F11 也能按, 所以菜单要刷新)
+        QTimer.singleShot(0, self._refresh_more_menu)
 
     def _hit_test_edge(self, pos):
         """铺满屏幕时不能拖边缩放 — 那是屏幕边缘, 不是窗口边缘。"""
@@ -869,6 +877,19 @@ class PyCalMainWindow(FloatingWindow):
         item("关于 PyCal", "版本信息与数据存放位置", self._show_about)
 
         section("窗口")
+        full_act = item("铺满屏幕 / 收成窗口",
+                        "铺满屏幕 = 当整面桌面的日历用\n"
+                        "收成窗口 = 自由拖四边缩放, 挪到哪都行 (快捷键 F11)",
+                        self.toggle_maximized)
+        full_act.setCheckable(True)
+        full_act.setChecked(self._full)
+        start_act = item("启动时铺满屏幕",
+                         "打开 PyCal 就铺满整面屏幕 (桌面日历)\n"
+                         "关掉的话, 下次启动是一个普通窗口, 能拖着挪、能缩放",
+                         self._toggle_startup_full)
+        start_act.setCheckable(True)
+        start_act.setChecked(
+            _load_setting("startup_mode", "full") == "full")
         close_menu = menu.addMenu("关闭窗口时")
         for label, value, tip in [
             ("收起到托盘 (后台继续运行)", "tray",
@@ -1007,6 +1028,16 @@ class PyCalMainWindow(FloatingWindow):
         self._topmost = not self._topmost
         _save_setting("topmost", "1" if self._topmost else "0")
         self._apply_topmost()
+
+    def _toggle_startup_full(self) -> None:
+        """启动时铺满屏幕 还是 启动就是普通窗口。
+
+        铺满屏幕的窗口拖不了边 (那会儿拖的是屏幕边缘), 有人就想要一个
+        能随便挪的小窗口 —— 这个开关让他下次启动就是那样。
+        """
+        full = _load_setting("startup_mode", "full") != "full"
+        _save_setting("startup_mode", "window" if full else "full")
+        QTimer.singleShot(0, self._refresh_more_menu)
 
     def _toggle_widget(self) -> None:
         """开关桌面挂件 —— 挂在桌面层的小月历。"""
@@ -1218,15 +1249,20 @@ class PyCalMainWindow(FloatingWindow):
     def _collapse(self, announce: bool = True) -> None:
         """收起窗口 — 程序继续在后台跑, 提醒和自动同步不受影响。"""
         self.hide()
+        # 终端里也喊一声 —— 很多人是 `python -m pycal gui` 起的,
+        # 窗口一消失就以为程序死了, 白白去杀进程。
+        print("[PyCal] 已收起到后台, 程序还在跑 (提醒和自动同步照常)。\n"
+              "        找回窗口: 双击右下角托盘图标 | 彻底退出: "
+              "托盘图标右键 → 退出 PyCal (或在这个终端按 Ctrl+C)")
         if announce and self._has_tray():
             self._tray.showMessage(
                 "PyCal 已收起到后台",
-                "提醒和自动同步仍在运行。\n"
-                "单击右下角托盘图标能弹「快捷待办」小窗, "
+                "程序还在跑, 提醒和自动同步照常。\n"
+                "双击右下角托盘图标能弹「快捷待办」小窗, "
                 "双击重新打开主窗口, 点托盘图标右键菜单的"
                 "「退出 PyCal」可彻底结束。",
                 QSystemTrayIcon.MessageIcon.Information,
-                4000,
+                6000,
             )
 
     def _ask_close_behavior(self) -> None:
@@ -1383,11 +1419,9 @@ def _tool_btn(text: str, skin: Optional[Skin] = None,
 
 
 def _import_dialog() -> None:
+    from pycal.db.connection import desktopcal_db_path
     from pycal.importer import run_import
-    import os
-    default_src = (
-        os.environ.get("APPDATA", "") + r"\CalendarTask\Db\calendar.db"
-    )
+    default_src = str(desktopcal_db_path())
     n = run_import(default_src)
     QMessageBox.information(
         None, "导入完成",
