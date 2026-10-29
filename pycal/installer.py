@@ -28,23 +28,17 @@ from pathlib import Path
 
 def _setup_stdout() -> None:
     """Windows 控制台默认 GBK, 遇到 ✓/✗ 会崩。强制 UTF-8。"""
-    for stream_name in ("stdout", "stderr"):
-        stream = getattr(sys, stream_name, None)
-        if stream is None:
-            continue
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass
+    from pycal.console import setup_stdout
+    setup_stdout()
 
 
 def _app_icon_path() -> str | None:
-    """找 PyCal 的 .ico (打包后 exe 图标 / 源码目录 assets/)。"""
+    """找 PyCal 的 .ico (打包后 exe 图标 / 源码目录 pycal/assets/)。"""
     if getattr(sys, "frozen", False):
         return sys.executable       # exe 内嵌图标
-    here = Path(__file__).resolve().parent.parent
+    here = Path(__file__).resolve().parent
     for cand in (here / "assets" / "pycal.ico",
-                 here / "pycal.ico"):
+                 here.parent / "assets" / "pycal.ico"):
         if cand.exists():
             return str(cand)
     return None

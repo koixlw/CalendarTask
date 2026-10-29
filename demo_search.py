@@ -17,7 +17,7 @@ desktopcal_search 的演示脚本。
 from __future__ import annotations
 import sys, textwrap
 
-from desktopcal_search import (
+from pycal.search.primitives import (
     SearchEngine, SearchOptions, SearchHit,
     SearchDispatcher, DispatcherConfig, LiveSearch,
     SEARCH_TEXT_COLOR_PALETTE,

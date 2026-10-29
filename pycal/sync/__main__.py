@@ -25,6 +25,7 @@ from pycal.sync.accounts import (
 from pycal.sync.client import CaldavClient, CaldavError
 from pycal.sync.engine import SyncEngine, sync_all
 from pycal.sync.presets import get_preset
+from pycal.console import setup_stdout
 
 
 def cmd_list() -> int:
@@ -129,12 +130,14 @@ def cmd_sync_all(policy: str) -> int:
 
 
 def main() -> int:
+    setup_stdout()
     p = argparse.ArgumentParser(prog="pycal.sync")
     p.add_argument("--list", action="store_true")
     p.add_argument("--add-google", action="store_true")
     p.add_argument("--add-icloud", action="store_true")
     p.add_argument("--add-outlook", action="store_true")
-    p.add_argument("--add-custom", nargs="*", metavar=("URL", "USER", "PASS"))
+    p.add_argument("--add-custom", nargs="*", metavar="VALUE",
+                   help="自定义 CalDAV: --add-custom URL USER [PASS] [NAME]")
     p.add_argument("--test", type=int, metavar="ID")
     p.add_argument("--sync", type=int, metavar="ID")
     p.add_argument("--sync-all", action="store_true")

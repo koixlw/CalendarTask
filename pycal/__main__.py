@@ -10,9 +10,15 @@ from __future__ import annotations
 import argparse
 import sys
 
+from pycal.console import setup_stdout
+
 
 def main() -> int:
+    setup_stdout()
     parser = argparse.ArgumentParser(prog="pycal")
+    parser.add_argument(
+        "-V", "--version", action="store_true",
+        help="显示版本号后退出")
     sub = parser.add_subparsers(dest="cmd")
 
     p_gui = sub.add_parser("gui", help="启动桌面日历窗口")
@@ -21,8 +27,8 @@ def main() -> int:
     p_imp = sub.add_parser("import", help="从 DesktopCal calendar.db 导入")
     p_imp.add_argument(
         "--source",
-        default=r"C:\Users\Administrator\AppData\Roaming\CalendarTask\Db\calendar.db",
-        help="DesktopCal 数据库路径",
+        default=None,
+        help="DesktopCal 数据库路径 (默认 %%APPDATA%%\\CalendarTask\\Db\\calendar.db)",
     )
 
     p_search = sub.add_parser("search", help="命令行搜索")
@@ -57,15 +63,27 @@ def main() -> int:
 
     args = parser.parse_args()
 
+    if getattr(args, "version", False):
+        from pycal import __version__
+        print(f"PyCal {__version__}")
+        return 0
+
     if args.cmd in (None, "gui"):
         from pycal.ui.main_window import run
+        from pycal.settings import get_setting
         # 不带子命令时 args 是顶层 Namespace, 没有 no_fullscreen 字段
-        fullscreen = not getattr(args, "no_fullscreen", False)
+        # 启动方式: 命令行 > 设置 (「⋯ 更多 → 窗口 → 启动时铺满屏幕」) > 默认铺满
+        if getattr(args, "no_fullscreen", False):
+            fullscreen = False
+        else:
+            fullscreen = get_setting("startup_mode", "full") != "window"
         return run(fullscreen=fullscreen)
     if args.cmd == "import":
+        from pycal.db.connection import desktopcal_db_path
         from pycal.importer import run_import
-        n = run_import(args.source)
-        print(f"imported {n} items from {args.source}")
+        source = args.source or str(desktopcal_db_path())
+        n = run_import(source)
+        print(f"imported {n} items from {source}")
         return 0
     if args.cmd == "search":
         from pycal.db.connection import open_default
@@ -129,12 +147,18 @@ def main() -> int:
     if args.cmd == "sync":
         import sys as _sys
         from pycal.sync.__main__ import main as sync_main
-        _sys.argv = ["pycal.sync"] + (
-            [] if args.action == "list" else
-            ["--sync-all"] if args.action == "sync-all" else
-            ["--sync", "1"] if args.action == "sync" else
-            ["--list"]
-        )
+        if args.action == "add":
+            print("请指定服务商:")
+            print("  python -m pycal.sync --add-google")
+            print("  python -m pycal.sync --add-icloud")
+            print("  python -m pycal.sync --add-outlook")
+            print("  python -m pycal.sync --add-custom URL USER [PASS] [NAME]")
+            return 1
+        _sys.argv = ["pycal.sync"] + {
+            "list": ["--list"],
+            "sync": ["--sync", "1"],
+            "sync-all": ["--sync-all"],
+        }[args.action]
         return sync_main()
     if args.cmd == "install":
         import sys as _sys

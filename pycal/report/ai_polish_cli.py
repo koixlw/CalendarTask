@@ -32,17 +32,7 @@ from pycal.report.ai_polish import (
     STYLES, PolishError, ClaudePolishClient, has_api_key,
     api_key_hint, MODEL_DEFAULT, MODEL_FAST, MODEL_SMART,
 )
-
-
-def _setup_stdout() -> None:
-    for name in ("stdout", "stderr"):
-        s = getattr(sys, name, None)
-        if s is None:
-            continue
-        try:
-            s.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass
+from pycal.console import setup_stdout as _setup_stdout
 
 
 def _build_report(args) -> tuple[str, str]:

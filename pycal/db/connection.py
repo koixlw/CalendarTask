@@ -24,6 +24,15 @@ def default_db_path() -> Path:
     return p
 
 
+def desktopcal_db_path() -> Path:
+    """DesktopCal 的数据库位置 —— 只用来导入, PyCal 从不写它。
+
+    在自己机器上找得到, 在别人机器上通常不存在 (导入会 gracefully 跳过)。
+    """
+    base = os.environ.get("APPDATA") or str(Path.home() / ".config")
+    return Path(base) / "CalendarTask" / "Db" / "calendar.db"
+
+
 def _make_conn(path: str | os.PathLike[str]) -> sqlite3.Connection:
     con = sqlite3.connect(str(path), timeout=5.0, isolation_level=None)
     con.row_factory = sqlite3.Row

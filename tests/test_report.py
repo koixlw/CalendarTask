@@ -13,6 +13,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from pycal.console import setup_stdout
+# Windows 中文控制台默认 GBK, 打印 ✓/◀/☐ 会抛 UnicodeEncodeError
+setup_stdout()
+
+
 PASS, FAIL = [], []
 
 
@@ -26,34 +31,15 @@ def check(name: str, cond: bool, extra: str = ""):
 
 
 def _fixture(con):
-    """造一周的测试数据。"""
-    from pycal.db.models import CalendarItem
-    from pycal.db.repository import upsert_item
-    base = date(2026, 10, 19)      # 周一
-    for i in range(7):
-        d = base + timedelta(days=i)
-        iso = d.isoformat()
-        # 周一：4 行，2 完成
-        upsert_item(con, CalendarItem(
-            item_id=f"m{i}", date=iso, type=0, title=f"第{i+1}天计划",
-            content="[+] 晨会\n[ ] 写文档\n[ ] code review\n[+] 买咖啡"))
-        if i % 2 == 0:
-            upsert_item(con, CalendarItem(
-                item_id=f"r{i}", date=iso, type=1, title="每天跑步",
-                content="[ ] 3km", is_completed=1 if i < 2 else 0))
-        if i == 2:
-            upsert_item(con, CalendarItem(
-                item_id=f"c{i}", date=iso, type=3, title="项目截止"))
-            con.execute(
-                "INSERT INTO countdowns(item_id,target_date,repeat_yearly) "
-                "VALUES (?,?,0)", (f"c{i}", "2026-11-11"))
-    return base
+    """造一周的测试数据 (和 conftest.py 用的是同一份)。"""
+    from helpers import seed_report_fixture
+    return seed_report_fixture(con)
 
 
 def test_parse():
     print("\n=== 1. [+] 完成标记解析 ===")
     from pycal.report import _parse_content
-    from desktopcal_search import line_is_completed
+    from pycal.search.primitives import line_is_completed
     r = _parse_content("[+] 晨会 30min\n[ ] 写周报\n普通行")
     check("3 行解析", len(r) == 3, f"got {len(r)}")
     check("[+] 标记为完成", r[0].completed and r[0].text == "晨会 30min",
@@ -147,6 +133,7 @@ def main() -> int:
     print("=" * 70)
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
     from pycal.db.connection import _make_conn
+    from helpers import cleanup_db
     con = _make_conn(tmp)
     try:
         _fixture(con)
@@ -161,11 +148,7 @@ def main() -> int:
             con.close()
         except Exception:
             pass
-        for suffix in ("", "-wal", "-shm"):
-            try:
-                os.unlink(tmp + suffix)
-            except OSError:
-                pass
+        cleanup_db(tmp)
 
     print("\n" + "=" * 70)
     print(f"通过 {len(PASS)} / 失败 {len(FAIL)}")

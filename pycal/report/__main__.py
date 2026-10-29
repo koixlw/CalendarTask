@@ -23,6 +23,8 @@ import webbrowser
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from pycal.console import setup_stdout
+
 
 def _default_out_dir() -> Path:
     base = os.environ.get("APPDATA") or str(Path.home() / ".config")
@@ -115,6 +117,7 @@ def _auto_mode(args) -> int:
 
 
 def main() -> int:
+    setup_stdout()
     p = argparse.ArgumentParser(prog="pycal.report")
     p.add_argument("--today", action="store_true")
     p.add_argument("--yesterday", action="store_true")

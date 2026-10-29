@@ -4,7 +4,7 @@
   原生层  : SQLite FTS5 (calendar_items_fts)         → 取候选集
   过滤层  : Python (颜色+完成度+类型+关键字+时间)     → 富匹配
 
-匹配算法直接复用 desktopcal_search.py 的原语:
+匹配算法直接复用 pycal.search.primitives 的原语:
   - text_has_keyword            : 大小写不敏感, plain text
   - is_content_match_keyword    : MarkdownParse 后可见正文
   - ColorMatcher                : 防色值数字误命中 (RGB/BGR, 带#/不带#)
@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 # 复用已有原语
-from desktopcal_search import (
+from pycal.search.primitives import (
     normalize_keyword,
     text_has_keyword,
     is_content_match_keyword,

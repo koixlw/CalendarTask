@@ -82,7 +82,11 @@ def _try_lunardate(d: date) -> Optional[str]:
     except ImportError:
         return None
     try:
-        ld = LunarDate.fromSolarDate(d.year, d.month, d.day)
+        try:
+            # 新版 lunardate 用下划线命名
+            ld = LunarDate.from_solar_date(d.year, d.month, d.day)
+        except AttributeError:
+            ld = LunarDate.fromSolarDate(d.year, d.month, d.day)
     except (ValueError, AttributeError):
         return None
     # 节日优先
