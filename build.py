@@ -24,6 +24,14 @@ from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parent
 
+# Windows 中文控制台默认 GBK, 打印 ✓ 会崩
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 
 def log(msg: str) -> None:
     print(f"\033[36m[build]\033[0m {msg}", flush=True)
@@ -49,7 +57,7 @@ def ensure_pyinstaller() -> bool:
 
 
 def make_icon() -> Path | None:
-    icon = PROJECT / "assets" / "pycal.ico"
+    icon = PROJECT / "pycal" / "assets" / "pycal.ico"
     if icon.exists():
         log(f"图标已存在: {icon}")
         return icon
@@ -129,7 +137,7 @@ def post_install() -> int:
         err("找不到 exe, 跳过安装配置")
         return 1
 
-    icon = PROJECT / "assets" / "pycal.ico"
+    icon = PROJECT / "pycal" / "assets" / "pycal.ico"
     sys.path.insert(0, str(PROJECT))
     try:
         import winreg

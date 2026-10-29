@@ -1,8 +1,28 @@
 [project]
 name = "pycal"
-version = "0.1.0"
-description = "桌面日历复刻 — PySide6 + SQLite, 兼容 DesktopCal"
+dynamic = ["version"]
+description = "PyCal — 桌面日历复刻 (PySide6 + SQLite, 兼容 DesktopCal)"
+readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "PyCal contributors" }]
+keywords = ["calendar", "desktop", "pyside6", "todo", "desktopcal"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Win32 (MS Windows)",
+    "Environment :: MacOS X",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: Chinese (Simplified)",
+    "Operating System :: Microsoft :: Windows :: Windows 10",
+    "Operating System :: Microsoft :: Windows :: Windows 11",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Scheduling",
+]
 dependencies = [
     "PySide6>=6.6",
     "lunardate>=0.3",
@@ -13,9 +33,15 @@ dependencies = [
     "anthropic>=0.40",
 ]
 
+[project.urls]
+Homepage = "https://github.com/koixlw/CalendarTask"
+Repository = "https://github.com/koixlw/CalendarTask"
+Issues = "https://github.com/koixlw/CalendarTask/issues"
+Changelog = "https://github.com/koixlw/CalendarTask/blob/main/CHANGELOG.md"
+
 [project.scripts]
 pycal = "pycal.__main__:main"
-pycal-import = "tools.import_from_desktopcal:main"
+pycal-import = "pycal.importer.cli:main"
 pycal-sync = "pycal.sync.__main__:main"
 pycal-report = "pycal.report.__main__:main"
 pycal-polish = "pycal.report.ai_polish_cli:main"
@@ -27,3 +53,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["pycal*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "pycal.__version__" }
+
+[tool.setuptools.package-data]
+pycal = ["assets/*.ico"]

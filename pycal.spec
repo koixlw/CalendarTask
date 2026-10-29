@@ -55,13 +55,16 @@ HIDDEN_IMPORTS = [
     "pycal.ui.color_picker", "pycal.ui.floating_window", "pycal.ui.skin",
     "pycal.ui.settings_dialog", "pycal.ui.ai_polish_dialog",
     "pycal.ui.desktop_widget", "pycal.ui.outline_label",
-    "pycal.ui.quick_panel",
+    "pycal.ui.quick_panel", "pycal.ui.year_view", "pycal.ui.help_dialog",
 
     # 功能模块
     "pycal.notes", "pycal.notifier", "pycal.report", "pycal.lunar",
     "pycal.desktop.wallpaper", "pycal.desktop.autostart", "pycal.installer",
     "pycal.sync", "pycal.sync.__main__", "pycal.report.__main__",
-    "pycal.settings",
+    "pycal.report.ai_polish_cli",
+    "pycal.settings", "pycal.console",
+    "pycal.importer", "pycal.importer.cli",
+    "pycal.search", "pycal.search.primitives",
 
     # CalDAV / iCal
     "caldav", "icalendar", "recurring_ical_events",
@@ -80,8 +83,8 @@ HIDDEN_IMPORTS = [
 
 datas = []
 
-# 图标
-ICON = PROJECT / "assets" / "pycal.ico"
+# 图标 (放在包内, pip 装完也能找到)
+ICON = PROJECT / "pycal" / "assets" / "pycal.ico"
 if not ICON.exists() and not NO_ICON:
     try:
         sys.path.insert(0, str(PROJECT))
@@ -110,11 +113,15 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# 单文件 vs 单目录 —— 差别在于二进制是塞进 EXE 还是由 COLLECT 摊到
+# _internal/ 目录里。必须在 EXE() 调用时就定好, 事后再往 exe.binaries 上赋值
+# 是没用的 —— EXE 那会儿已经构建完了 (结果就是 dist/ 下啥也没有)。
 exe = EXE(
     pyz,
     a.scripts,
-    [],
-    exclude_binaries=True,        # onefile 时直接把二进制塞进 EXE
+    a.binaries if ONEFILE else [],
+    a.datas if ONEFILE else [],
+    exclude_binaries=not ONEFILE,   # onefile: 二进制进 EXE; onedir: 交给 COLLECT
     name="PyCal",
     debug=False,
     bootloader_ignore_signals=False,
@@ -131,11 +138,7 @@ exe = EXE(
     icon=ICON_ARG,
 )
 
-if ONEFILE:
-    # 单文件: 二进制 + 数据全塞进同一个 EXE
-    exe.binaries = a.binaries
-    exe.datas = a.datas
-else:
+if not ONEFILE:
     # 单目录: EXE 只放启动器, 依赖放 _internal/
     coll = COLLECT(
         exe,
