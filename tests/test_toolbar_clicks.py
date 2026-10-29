@@ -154,7 +154,7 @@ def main() -> int:
         "_toggle_animation", "_open_help", "_show_about", "_collapse",
         "_quit_app", "_set_skin", "_set_opacity",
         "_toggle_year_view_from_menu", "_open_settings",
-        "_toggle_widget", "_toggle_quick_panel",
+        "_toggle_quick_panel",
         "toggle_maximized", "_toggle_startup_full",
     ]
     hit: list[str] = []

@@ -54,7 +54,7 @@ HIDDEN_IMPORTS = [
     "pycal.ui.search_dialog", "pycal.ui.sync_dialog", "pycal.ui.report_dialog",
     "pycal.ui.color_picker", "pycal.ui.floating_window", "pycal.ui.skin",
     "pycal.ui.settings_dialog", "pycal.ui.ai_polish_dialog",
-    "pycal.ui.desktop_widget", "pycal.ui.outline_label",
+    "pycal.ui.outline_label",
     "pycal.ui.quick_panel", "pycal.ui.year_view", "pycal.ui.help_dialog",
 
     # 功能模块

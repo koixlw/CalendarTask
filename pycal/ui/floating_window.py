@@ -166,12 +166,9 @@ class FloatingWindow(QMainWindow):
         if event.button() == Qt.MouseButton.LeftButton:
             global_pos = event.globalPosition().toPoint()
             local_pos = event.position().toPoint()
-            # 1) 标题栏拖动 — 优先级最高
-            if self._drag_area and local_pos.y() <= self._drag_area_height:
-                self._begin_drag(global_pos)
-                event.accept()
-                return
-            # 2) 边缘 resize
+            # 1) 边缘 resize — 先判。
+            #    不先判的话, 工具栏 (占着最上面 36px) 的拖动区会把顶边和
+            #    两个上角全抢走, 那三个方向根本没法用来缩放。
             direction = self._hit_test_edge(local_pos)
             if direction:
                 self._drag_pos = global_pos
@@ -180,6 +177,11 @@ class FloatingWindow(QMainWindow):
                     self.grabMouse()
                 except Exception:
                     pass
+                event.accept()
+                return
+            # 2) 标题栏拖动
+            if self._drag_area and local_pos.y() <= self._drag_area_height:
+                self._begin_drag(global_pos)
                 event.accept()
                 return
         super().mousePressEvent(event)
@@ -239,27 +241,37 @@ class FloatingWindow(QMainWindow):
         return None
 
     def _perform_resize(self, global_pos: QPoint) -> None:
-        """按 _resize_dir 方向缩放到 global_pos。"""
+        """按 _resize_dir 方向缩放到 global_pos。
+
+        四条边 / 四个角一次算清楚再摆 —— 之前是一条边一条边地摆, 后摆的
+        会把先摆的结果盖掉 (西北角拖完宽度又弹回原样)。
+        """
         rect = self.geometry()
         x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
         delta = global_pos - self._drag_pos
         MIN_W, MIN_H = 360, 280
         if "e" in self._resize_dir:
-            new_w = max(MIN_W, w + delta.x())
-            self.setGeometry(x, y, new_w, h)
+            w = max(MIN_W, w + delta.x())
         if "s" in self._resize_dir:
-            new_h = max(MIN_H, h + delta.y())
-            self.setGeometry(x, y, self.width(), new_h)
+            h = max(MIN_H, h + delta.y())
         if "w" in self._resize_dir:
-            new_w = max(MIN_W, w - delta.x())
-            new_x = x + (w - new_w)
-            self.setGeometry(new_x, y, new_w, h)
+            w = max(MIN_W, w - delta.x())
+            x = x + (rect.width() - w)      # 左边界往里收, 右边不动
         if "n" in self._resize_dir:
-            new_h = max(MIN_H, h - delta.y())
-            new_y = y + (h - new_h)
-            self.setGeometry(x, new_y, w, new_h)
+            h = max(MIN_H, h - delta.y())
+            y = y + (rect.height() - h)     # 上边界往里收, 下边不动
+        self._apply_resize_geometry(QRect(x, y, w, h))
         # 更新 _drag_pos 为"当前差值"
         self._drag_pos = global_pos
+
+    def _apply_resize_geometry(self, rect: QRect) -> None:
+        """真正把窗口摆到新的位置和大小。
+
+        单独拎出来一个口子 —— 子类可以在摆之前先做「尺寸相关的调整」。
+        (主窗要先按目标宽度把工具栏切成紧凑模式, 否则布局的最小宽度
+        会把窗口卡在那儿, 往里拖边框根本收不动。)
+        """
+        self.setGeometry(rect)
 
     # ------------------------------------------------------------------
     # Esc 关闭

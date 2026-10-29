@@ -147,12 +147,5 @@ panel.resize(panel.width(), panel.sizeHint().height())
 shoot(panel, "quick-panel")
 panel.close()
 
-# ── 4. 桌面挂件 (贴在桌面层的小月历) ────────────────────────────────
-from pycal.ui.desktop_widget import DesktopWidget
-
-widget = DesktopWidget()
-shoot(widget, "desktop-widget")
-widget.close()
-
 win.close()
 print("done")

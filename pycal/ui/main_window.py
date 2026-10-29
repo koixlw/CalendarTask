@@ -91,7 +91,7 @@ def _save_item(
         )
 
 
-def run(fullscreen: bool = True) -> int:
+def run(fullscreen: bool = False) -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
 
@@ -108,11 +108,6 @@ def run(fullscreen: bool = True) -> int:
 
     win.show()
 
-    # 桌面挂件 — 上次开着就接着开 (挂在桌面层, 不抢主窗的焦点)
-    from pycal.settings import get_setting
-    if get_setting("desktop_widget", "0") == "1":
-        win._widget_mgr.show()
-
     return app.exec()
 
 
@@ -125,10 +120,14 @@ class PyCalMainWindow(FloatingWindow):
     # 窗口窄于这个宽度 → 工具栏按钮切成纯图标
     _COMPACT_UNDER = 1460
 
-    def __init__(self, app: QApplication, fullscreen: bool = True):
+    # 「收成窗口」时的默认大小 —— 启动弹出来的窗口就用这个尺寸。
+    # 不铺满整屏: 一开就占满一整块屏幕太霸道, 挡着别的窗口用。
+    COLLAPSED_W = 1100
+    COLLAPSED_H = 760
+
+    def __init__(self, app: QApplication, fullscreen: bool = False):
         super().__init__()
         self._app = app
-        self._fullscreen_on_start = fullscreen
         self._skin: Skin = current_skin(
             _load_setting("skin", "light_default")
         )
@@ -150,15 +149,19 @@ class PyCalMainWindow(FloatingWindow):
         self._base_app_pt = app.font().pointSize() if app.font().pointSize() > 0 else 0
 
         self.setWindowTitle("PyCal")
-        # 铺满屏幕 / 普通窗口 两种状态 — 启动时铺满 (桌面日历嘛),
-        # 点「□」收成普通窗口后就能自由拖边缩放
+        # 铺满屏幕 / 普通窗口 两种状态 — 默认启动就是「收成窗口」那个尺寸,
+        # 想当整面桌面的日历用再按 F11 / 点「□ 铺满屏幕」。
         self._full = fullscreen
         self._normal_rect: Optional[QRect] = None
         if fullscreen:
-            screen = app.primaryScreen().geometry()
-            self.setGeometry(screen)
+            self._intended_rect = app.primaryScreen().geometry()
         else:
-            self.resize(1000, 720)
+            # 上次关窗时窗口在哪儿、拉多大 —— 照原样摆回来。
+            # 第一次用 (还没存过) 就用居中的默认尺寸。
+            saved = self._load_normal_rect()
+            self._intended_rect = (
+                saved if saved is not None else self._collapsed_rect())
+        self.setGeometry(self._intended_rect)
 
         # Frameless + transparent (FramelessHint 已由 FloatingWindow 处理)
         self.setWindowFlags(
@@ -168,13 +171,8 @@ class PyCalMainWindow(FloatingWindow):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
-        # 桌面挂件 — 贴在桌面层的小月历 (壁纸透出来那种)。
-        # 得在 _build_ui 之前建 —— 工具栏菜单里要挂它的开关项。
-        from pycal.ui.desktop_widget import DesktopWidgetManager
-        self._widget_mgr = DesktopWidgetManager(self)
-
         # 快捷待办面板 — 点托盘图标弹出来的小窗口。
-        # 同样得在 _build_ui 之前建 —— 工具栏菜单里要挂它的开关项。
+        # 得在 _build_ui 之前建 —— 工具栏菜单里要挂它的开关项。
         from pycal.ui.quick_panel import QuickPanelManager
         self._quick_mgr = QuickPanelManager(self)
 
@@ -183,6 +181,10 @@ class PyCalMainWindow(FloatingWindow):
 
         # 构造 UI
         self._build_ui()
+
+        # 再摆回原位一次 —— 布局刚建好时, 带文字的工具栏会把窗口撑到它的
+        # 最小宽度 (1448), 摆回原位就恢复正常大小了。
+        self.setGeometry(self._intended_rect)
 
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
@@ -322,7 +324,8 @@ class PyCalMainWindow(FloatingWindow):
         self._opacity_label = QLabel("100%")
         self._anim_label = QLabel("动画 开")
         self._hint_label = QLabel(
-            "单击 ☐ 打勾 · 双击文字编辑 · 右键更多 · F11 收成窗口可自由缩放")
+            "单击 ☐ 打勾 · 双击文字编辑 · 右键更多 · "
+            "拖四边自由缩放 · F11 铺满屏幕")
         # 提示文字不参与算窗口的最小宽度 —— 否则这行字越长, 窗口就缩不窄
         self._hint_label.setSizePolicy(
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -412,8 +415,10 @@ class PyCalMainWindow(FloatingWindow):
         QTimer.singleShot(60_000, self._auto_report_tick)   # 启动 1min 后首检
 
         # 窄屏 (比如 1366 的本) 一开始就该是紧凑工具栏 — 等第一次 resize
-        # 才切的话, 窗口会先被撑到 1448 宽, 超出屏幕
-        self._apply_toolbar_compact()
+        # 才切的话, 窗口会先被撑到 1448 宽, 超出屏幕。
+        # 这里按「本来想要的宽度」判断, 不是按当前宽度 —— 布局刚建好时
+        # 窗口已经被撑到工具栏的最小宽度了, 那时再判断就永远判不出来。
+        self._apply_toolbar_compact(self._intended_rect.width())
 
     # ------------------------------------------------------------------
     # 月 / 年视图切换
@@ -505,14 +510,18 @@ class PyCalMainWindow(FloatingWindow):
         btn.style().unpolish(btn)
         btn.style().polish(btn)
 
-    def _apply_toolbar_compact(self) -> None:
+    def _apply_toolbar_compact(self, width: Optional[int] = None) -> None:
         """窗口窄了 → 工具栏按钮只留图标。
 
         12 个带字的按钮最少要 1400px, 不切的话窗口的下限就被工具栏钉死,
         「自由缩放」就成了空话。tooltip 里始终写着完整名字, 认不出来可以
         把鼠标停上去看。
+
+        width 是「打算摆多宽」—— 不能一律用 self.width(): 布局的最小宽度
+        会先把窗口撑到 1448, 那时再看宽度就永远看不出「该切紧凑了」。
         """
-        compact = self.width() < self._COMPACT_UNDER
+        w = self.width() if width is None else width
+        compact = w < self._COMPACT_UNDER
         if compact != self._compact:
             self._compact = compact
             for btn, (full, short) in self._tool_labels.items():
@@ -526,8 +535,22 @@ class PyCalMainWindow(FloatingWindow):
             self._month_label.setMinimumWidth(100 if compact else 140)
             self._restyle_tools()
             self._style_month_label()
+            # 布局的最小宽度跟着变了 (带文字的工具栏要 1100 多 → 纯图标
+            # 只要 600 出头), 但窗口上「显式设过的最小宽度」不会跟着降。
+            # 不清掉的话, 窗口一旦进过宽模式就再也缩不回去了 ——
+            # 明明工具栏已经是图标了, 还是卡在 1100 多收不动。
+            self.setMinimumSize(0, 0)
         self._update_max_btn()
         self._update_month_label()
+
+    def _apply_resize_geometry(self, rect: QRect) -> None:
+        """拖边框缩放时摆窗口 —— 先按目标宽度决定工具栏要不要切紧凑。
+
+        顺序很要紧: 不先切, 布局算出来的最小宽度 (带文字的工具栏要 1448)
+        会把窗口按在那儿 —— 往里拖边框根本收不动, 窗口永远卡在 1448 宽。
+        """
+        self._apply_toolbar_compact(rect.width())
+        super()._apply_resize_geometry(rect)
 
     def _update_max_btn(self) -> None:
         """「铺满 / 收成」按钮的文案跟着当前状态走。"""
@@ -642,6 +665,54 @@ class PyCalMainWindow(FloatingWindow):
     # ------------------------------------------------------------------
     # 铺满屏幕 / 普通窗口
     # ------------------------------------------------------------------
+    def _collapsed_rect(self) -> QRect:
+        """「收成窗口」时的矩形 — 居中, 大小不超过屏幕。
+
+        启动弹出来的窗口就用这个尺寸 —— 不铺满整屏。
+        """
+        scr = QApplication.primaryScreen().availableGeometry()
+        w = min(self.COLLAPSED_W, scr.width() - 80)
+        h = min(self.COLLAPSED_H, scr.height() - 80)
+        return QRect(
+            scr.x() + (scr.width() - w) // 2,
+            scr.y() + (scr.height() - h) // 2,
+            w, h,
+        )
+
+    def _load_normal_rect(self) -> Optional[QRect]:
+        """上次关窗时那个普通窗口的位置和大小 — 读出来照原样摆回去。
+
+        存的是「收起时」的矩形: 用户上次把它拖到哪、拉多大, 下次启动
+        就还是那个样子, 不用每次都弹一个默认尺寸。
+        """
+        raw = _load_setting("normal_rect", "")
+        parts = raw.split(",")
+        if len(parts) != 4:
+            return None
+        try:
+            x, y, w, h = (int(p) for p in parts)
+        except ValueError:
+            return None
+        if w < 200 or h < 150:
+            return None        # 存坏了 / 太小, 用默认尺寸
+        rect = QRect(x, y, w, h)
+        # 换过显示器、拔过投影仪 → 存的位置可能已经不在任何屏幕上了。
+        # 那种情况宁可用默认位置, 也别让窗口弹到看不见的地方。
+        for scr in QApplication.screens():
+            if scr.availableGeometry().intersects(rect):
+                return rect
+        return None
+
+    def _save_normal_rect(self) -> None:
+        """把当前普通窗口的矩形存下来 — 下次启动照原样摆回来。"""
+        if getattr(self, "_full", False):
+            return              # 铺满时的矩形不是用户想要的那个
+        r = self.geometry()
+        if r.width() < 200 or r.height() < 150:
+            return
+        _save_setting(
+            "normal_rect", f"{r.x()},{r.y()},{r.width()},{r.height()}")
+
     def toggle_maximized(self) -> None:
         """在「铺满屏幕」和「普通窗口」之间切换。
 
@@ -651,18 +722,16 @@ class PyCalMainWindow(FloatingWindow):
         """
         if self._full:
             self._full = False
-            if self._normal_rect is not None:
-                self.setGeometry(self._normal_rect)
-            else:
-                scr = QApplication.primaryScreen().availableGeometry()
-                w = min(1100, scr.width() - 80)
-                h = min(760, scr.height() - 80)
-                self.setGeometry(
-                    scr.x() + (scr.width() - w) // 2,
-                    scr.y() + (scr.height() - h) // 2, w, h,
-                )
+            # 还原成上次那个普通窗口 (没有就退回到居中的默认尺寸)
+            rect = self._normal_rect or self._load_normal_rect()
+            rect = rect if rect is not None else self._collapsed_rect()
+            # 先按目标宽度切工具栏, 再摆 —— 摆的时候布局算出来的最小宽度
+            # 才会是对的那个, 不然窗口会被钉在 1448 宽收不回来
+            self._apply_toolbar_compact(rect.width())
+            self.setGeometry(rect)
         else:
             self._normal_rect = self.geometry()
+            self._save_normal_rect()
             self._full = True
             scr = QApplication.primaryScreen().geometry()
             self.setGeometry(scr)
@@ -850,15 +919,6 @@ class PyCalMainWindow(FloatingWindow):
                        self._toggle_topmost)
         top_act.setCheckable(True)
         top_act.setChecked(self._topmost)
-        widget_act = item(
-            "桌面挂件 (贴在桌面上的小日历)",
-            "在屏幕角落放一个小月历, 壁纸透出来那种\n"
-            "挂在桌面层, 别的窗口能盖住它; 右键挂件能改层级和字色\n"
-            "主窗铺满屏幕时会挡住挂件 —— 收成窗口就看得见了",
-            self._toggle_widget)
-        widget_act.setCheckable(True)
-        widget_act.setChecked(
-            self._widget_mgr is not None and self._widget_mgr.visible())
         anim_act = item("月份切换动画", "翻月时左右滑动, 可以关掉",
                         self._toggle_animation)
         anim_act.setCheckable(True)
@@ -885,11 +945,12 @@ class PyCalMainWindow(FloatingWindow):
         full_act.setChecked(self._full)
         start_act = item("启动时铺满屏幕",
                          "打开 PyCal 就铺满整面屏幕 (桌面日历)\n"
-                         "关掉的话, 下次启动是一个普通窗口, 能拖着挪、能缩放",
+                         "默认是关的 —— 启动弹一个普通窗口出来, "
+                         "能拖着挪、能自由缩放, 大小跟上次一样",
                          self._toggle_startup_full)
         start_act.setCheckable(True)
         start_act.setChecked(
-            _load_setting("startup_mode", "full") == "full")
+            _load_setting("startup_mode", "window") == "full")
         close_menu = menu.addMenu("关闭窗口时")
         for label, value, tip in [
             ("收起到托盘 (后台继续运行)", "tray",
@@ -1032,31 +1093,11 @@ class PyCalMainWindow(FloatingWindow):
     def _toggle_startup_full(self) -> None:
         """启动时铺满屏幕 还是 启动就是普通窗口。
 
-        铺满屏幕的窗口拖不了边 (那会儿拖的是屏幕边缘), 有人就想要一个
-        能随便挪的小窗口 —— 这个开关让他下次启动就是那样。
+        默认是普通窗口 —— 一弹出就铺满整屏太霸道。打开这个开关的人
+        是真拿它当整面桌面的日历用的, 那下次启动就还铺满。
         """
-        full = _load_setting("startup_mode", "full") != "full"
+        full = _load_setting("startup_mode", "window") != "full"
         _save_setting("startup_mode", "window" if full else "full")
-        QTimer.singleShot(0, self._refresh_more_menu)
-
-    def _toggle_widget(self) -> None:
-        """开关桌面挂件 —— 挂在桌面层的小月历。"""
-        if self._widget_mgr is None:
-            return
-        was_on = self._widget_mgr.visible()
-        self._widget_mgr.toggle()
-        if not was_on and getattr(self, "_full", False) and self._has_tray():
-            # 挂件在桌面层, 主窗还铺满整个屏幕的话根本看不见它 ——
-            # 不说一声的话, 用户会以为这功能没生效。
-            self._tray.showMessage(
-                "桌面挂件已打开",
-                "主窗现在铺满屏幕, 会把挂件挡住。\n"
-                "点工具栏「□ 收成窗口」或者「— 收起」就能看到它。",
-                QSystemTrayIcon.MessageIcon.Information,
-                5000,
-            )
-        # 菜单里的勾选态跟着变。菜单此刻还开着, 直接重建会把它拆了 ——
-        # 推到下一轮事件循环再重建, 菜单已经关了才安全。
         QTimer.singleShot(0, self._refresh_more_menu)
 
     def _toggle_quick_panel(self) -> None:
@@ -1227,6 +1268,7 @@ class PyCalMainWindow(FloatingWindow):
     def _quit_app(self) -> None:
         if getattr(self, "_tray", None) is not None:
             self._tray.hide()
+        self._save_normal_rect()   # 窗口多大 — 下次启动照原样弹出来
         self.hide()          # 立刻收掉窗口, 别让它比进程多活一会儿
         self._app.quit()
 
@@ -1248,6 +1290,8 @@ class PyCalMainWindow(FloatingWindow):
 
     def _collapse(self, announce: bool = True) -> None:
         """收起窗口 — 程序继续在后台跑, 提醒和自动同步不受影响。"""
+        # 记下窗口现在多大 — 下次启动照原样弹出来
+        self._save_normal_rect()
         self.hide()
         # 终端里也喊一声 —— 很多人是 `python -m pycal gui` 起的,
         # 窗口一消失就以为程序死了, 白白去杀进程。
@@ -1306,6 +1350,8 @@ class PyCalMainWindow(FloatingWindow):
 
     def closeEvent(self, event):
         event.ignore()          # 先一律不真关, 由下面决定去留
+        # 窗口现在多大 —— 下次启动照原样弹出来
+        self._save_normal_rect()
         if not self._has_tray():
             # 没有托盘可躲 — 收起来用户就再也找不回来了, 只能真退出
             self._quit_app()
@@ -1509,24 +1555,10 @@ def _build_tray(win: QMainWindow, app: QApplication) -> Optional[QSystemTrayIcon
     act_search = QAction("搜索…", tray)
     act_search.triggered.connect(lambda: _search_dialog(win))
     menu.addAction(act_search)
-    # 桌面挂件 — 主窗藏起来以后, 靠这个还能把它叫出来
-    act_widget = QAction("桌面挂件", tray)
-    act_widget.setCheckable(True)
-    act_widget.setChecked(
-        getattr(win, "_widget_mgr", None) is not None
-        and win._widget_mgr.visible())
-    act_widget.setToolTip("贴在桌面层的小月历 (壁纸透出来那种)")
-    def _toggle_widget():
-        win._toggle_widget()
-        act_widget.setChecked(win._widget_mgr.visible())
-    act_widget.triggered.connect(_toggle_widget)
-    menu.addAction(act_widget)
-    # 菜单每次弹出前对一下勾 —— 面板和挂件也可能是从别处关掉的,
+    # 菜单每次弹出前对一下勾 —— 面板可能是从别处关掉的,
     # 勾留在那儿不动就骗人了
-    menu.aboutToShow.connect(lambda: (
-        act_quick.setChecked(win._quick_mgr.visible()),
-        act_widget.setChecked(win._widget_mgr.visible()),
-    ))
+    menu.aboutToShow.connect(
+        lambda: act_quick.setChecked(win._quick_mgr.visible()))
     menu.addSeparator()
     act_quit = QAction("退出 PyCal", tray)
     def _quit():

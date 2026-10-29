@@ -109,4 +109,9 @@ CREATE TABLE IF NOT EXISTS settings (
 INSERT OR IGNORE INTO settings(key, value) VALUES
     ('schema_version', '1'),
     ('first_run', datetime('now'));
+
+-- 「桌面挂件」功能已经下线 —— 把它留下的配置项清掉。
+-- 这段每次开库都会跑, 但第一次之后就没有行可删, 是空操作。
+DELETE FROM settings WHERE key IN
+    ('desktop_widget', 'widget_scale', 'widget_scheme', 'widget_topmost');
 """

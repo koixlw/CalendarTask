@@ -5,6 +5,7 @@
   - 窗口窄了 → 工具栏自动切成纯图标
   - 「□」按钮在「铺满屏幕」和「普通窗口」之间来回切
   - 月视图只画这个月真正占到的周
+  - 启动默认就是普通窗口 (不是一弹出就铺满整屏), 大小位置会记住
 
 跑:  python tests/test_resize.py
 """
@@ -121,7 +122,7 @@ def main() -> int:
     # ------------------------------------------------------------------
     print("\n=== 3. 铺满屏幕 / 普通窗口 ===")
 
-    check("启动是铺满屏幕", lambda: _assert(
+    check("显式要求铺满时才是铺满", lambda: _assert(
         win._full is True, win._full,
     ))
 
@@ -149,7 +150,142 @@ def main() -> int:
     ))
 
     # ------------------------------------------------------------------
-    print("\n=== 4. 月视图只画本月占到的周 ===")
+    print("\n=== 4. 启动默认就是普通窗口 (不是一弹出就铺满) ===")
+
+    win2 = PyCalMainWindow(app)          # 不传 fullscreen = 默认值
+    win2.show()
+    app.processEvents()
+
+    check("默认启动不是铺满状态", lambda: _assert(
+        win2._full is False, win2._full,
+    ))
+
+    check("默认启动用「收起时」那个大小", lambda: _assert(
+        win2.geometry() == win2._collapsed_rect(),
+        f"{win2.geometry()} != {win2._collapsed_rect()}",
+    ))
+
+    check("默认启动不占满整个屏幕", lambda: _assert(
+        win2.width() < QApplication.primaryScreen().geometry().width()
+        or win2.height() < QApplication.primaryScreen().geometry().height(),
+        f"{win2.geometry()}",
+    ))
+
+    check("默认启动就能拖边缩放", lambda: _assert(
+        win2._hit_test_edge(
+            win2.rect().topRight() + type(win2.rect().topRight())(-2, 40)
+        ) is not None,
+        "右上角应该能缩放",
+    ))
+
+    # 窗口大小 / 位置要记住 —— 下次启动照原样弹回来
+    win2.setGeometry(120, 140, 820, 620)
+    app.processEvents()
+    win2._collapse(announce=False)
+
+    win3 = PyCalMainWindow(app)
+    win3.show()
+    app.processEvents()
+    check("下次启动还是上次那个大小和位置", lambda: _assert(
+        win3.geometry() == win2.geometry(),
+        f"{win3.geometry()} != {win2.geometry()}",
+    ))
+
+    check("存下来的矩形不是铺满屏", lambda: _assert(
+        win3.width() < 2000 and win3.height() < 2000,
+        f"{win3.geometry()}",
+    ))
+
+    # ------------------------------------------------------------------
+    print("\n=== 5. 拖边框真的能改大小 (八个方向) ===")
+
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    def drag(target, local, dx, dy):
+        """在窗口某个位置按下, 再拖 (dx, dy) — 真发鼠标事件。"""
+        g0 = target.mapToGlobal(local)
+        target.mousePressEvent(QMouseEvent(
+            QMouseEvent.Type.MouseButtonPress, local, g0,
+            Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier))
+        g1 = g0 + QPoint(dx, dy)
+        target.mouseMoveEvent(QMouseEvent(
+            QMouseEvent.Type.MouseMove, local, g1,
+            Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier))
+        target.mouseReleaseEvent(QMouseEvent(
+            QMouseEvent.Type.MouseButtonRelease, local, g1,
+            Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier))
+        app.processEvents()
+
+    dr = win3
+    dr.setGeometry(200, 200, 900, 700)
+    app.processEvents()
+
+    # 右边缘往右拖 → 变宽, 左边不动
+    before = dr.geometry()
+    drag(dr, QPoint(before.width() - 2, before.height() // 2), 120, 0)
+    after = dr.geometry()
+    check("拖右边缘 → 窗口变宽", lambda: _assert(
+        after.width() > before.width(), f"{before} → {after}"))
+    check("拖右边缘 → 左边界不动", lambda: _assert(
+        after.left() == before.left(), f"{before} → {after}"))
+
+    # 西北角往左上拖 → 变大, 右下角保持不动
+    # (之前一条边一条边地摆, 后摆的把先摆的盖掉了 —— 宽度会弹回原样)
+    before = dr.geometry()
+    drag(dr, QPoint(2, 2), -120, -80)
+    after = dr.geometry()
+    check("拖西北角 → 宽度跟着变", lambda: _assert(
+        after.width() > before.width(), f"{before} → {after}"))
+    check("拖西北角 → 高度跟着变", lambda: _assert(
+        after.height() > before.height(), f"{before} → {after}"))
+    check("拖西北角 → 右下角不动", lambda: _assert(
+        after.right() == before.right() and after.bottom() == before.bottom(),
+        f"{before} → {after}"))
+
+    # 西南角往右下拖 → 变窄变高, 右上角保持不动
+    before = dr.geometry()
+    drag(dr, QPoint(2, before.height() - 2), 120, 80)
+    after = dr.geometry()
+    check("拖西南角 → 宽度跟着变", lambda: _assert(
+        after.width() < before.width(), f"{before} → {after}"))
+    check("拖西南角 → 高度跟着变", lambda: _assert(
+        after.height() > before.height(), f"{before} → {after}"))
+    check("拖西南角 → 右上角不动", lambda: _assert(
+        after.right() == before.right() and after.top() == before.top(),
+        f"{before} → {after}"))
+
+    # 从宽窗口往里收 → 得能收下去 (工具栏会先切成纯图标)
+    dr.setGeometry(100, 100, 1600, 800)
+    app.processEvents()
+    before = dr.geometry()
+    drag(dr, QPoint(before.width() - 2, before.height() // 2), -700, 0)
+    after = dr.geometry()
+    check("宽窗口能拖边收窄", lambda: _assert(
+        after.width() < before.width() - 500,
+        f"{before} → {after} (工具栏没切紧凑, 窗口收不动)"))
+    check("收窄后工具栏切成纯图标", lambda: _assert(
+        dr._compact, f"compact={dr._compact}"))
+
+    # 进过一次宽模式 (工具栏带文字, 最小宽度一下就上去了) 再收窄 ——
+    # 窗口上「显式设过的最小宽度」不会自动降, 不处理的话就再也收不回去
+    dr.setGeometry(100, 100, 1600, 800)
+    app.processEvents()
+    before = dr.geometry()
+    drag(dr, QPoint(before.width() - 2, before.height() // 2), -450, 0)
+    after = dr.geometry()
+    check("宽模式待过之后还能收窄", lambda: _assert(
+        after.width() <= before.width() - 400,
+        f"{before} → {after} (最小宽度卡住了, 收不回去)"))
+    check("收窄后不再卡在宽模式的最小宽度", lambda: _assert(
+        after.width() < dr._COMPACT_UNDER,
+        f"{after} 还是 >= {dr._COMPACT_UNDER}"))
+
+    # ------------------------------------------------------------------
+    print("\n=== 6. 月视图只画本月占到的周 ===")
 
     from datetime import date
     from calendar import monthrange

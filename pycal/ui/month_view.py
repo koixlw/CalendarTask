@@ -119,8 +119,8 @@ class CellColors:
     text_fg: str = "#222222"
     sub_fg: str = "#888888"
     header_fg: str = "#555555"
-    # ── 桌面挂件模式 ──
-    transparent: bool = False   # 格子不填底色 (壁纸直接透出来)
+    # ── 透明模式 ──
+    transparent: bool = False   # 格子不填底色 (背景直接透出来)
     halo: str = ""              # 文字描边色 (空 = 不描边)
 
 
@@ -131,7 +131,7 @@ def _qcolor(value: str) -> QColor:
     """颜色字符串 → QColor。
 
     QSS 认得 `rgba(r,g,b,a)`, 但 QColor 不认 —— 直接塞进去会得到一个
-    「不透明的黑」(isValid() 仍然是 True, 特别坑)。桌面挂件那套配色用的
+    「不透明的黑」(isValid() 仍然是 True, 特别坑)。带透明度的配色用的
     就是 rgba(), 这里自己解析一遍。
     """
     s = (value or "").strip()
@@ -149,27 +149,13 @@ def _qcolor(value: str) -> QColor:
 
 
 def colors_for_skin(skin_name: str) -> CellColors:
-    """按皮肤名返回格子配色 — dark_mode 和 desktop_widget 各一套。"""
+    """按皮肤名返回格子配色 — dark_mode 各一套。"""
     if skin_name in _DARK_SKIN_NAMES:
         return CellColors(
             body_bg="#2B2B30", muted_bg="#232327", today_bg="#4A4326",
             hover_bg="#33333A", border="#4A4A52", today_border="#4A90E2",
             num_fg="#ECEFF4", muted_fg="#6E6E76", done_fg="#75797F",
             text_fg="#ECEFF4", sub_fg="#9AA0A6", header_fg="#C8CDD6",
-        )
-    if skin_name == "desktop_widget":
-        # 桌面挂件 — 格子全透明, 只有网格线 + 带描边的字
-        return CellColors(
-            body_bg="transparent", muted_bg="transparent",
-            today_bg="rgba(255, 205, 60, 60)",
-            hover_bg="rgba(255, 255, 255, 70)",
-            border="rgba(255, 255, 255, 70)",
-            today_border="rgba(255, 205, 60, 220)",
-            num_fg="#FFFFFF", muted_fg="rgba(255, 255, 255, 140)",
-            done_fg="rgba(255, 255, 255, 150)", text_fg="#FFFFFF",
-            sub_fg="rgba(255, 255, 255, 200)",
-            header_fg="rgba(255, 255, 255, 235)",
-            transparent=True, halo="rgba(0, 0, 0, 175)",
         )
     return CellColors()
 
@@ -287,7 +273,7 @@ class LineRow(QWidget):
             pal = lbl.palette()
             pal.setColor(QPalette.ColorRole.WindowText, _qcolor(fg))
             lbl.setPalette(pal)
-            # 描边 — 挂件模式字直接压在壁纸上, 没描边就看不清
+            # 描边 — 透明模式字直接压在背景上, 没描边就看不清
             lbl.setHalo(self._halo)
         # 已完成的行加删除线 — QSS 不支持 text-decoration, 走 QFont
         self._font.setStrikeOut(self._done)
@@ -393,8 +379,8 @@ class DayCell(QFrame):
         p = QPainter(self)
         bg = _qcolor(self._bg)
         if bg.alpha() > 0:
-            # 全透明 (挂件模式) 就不画底色 — 跟原来 QSS 的
-            # `background: transparent` 一个意思, 让壁纸直接透出来
+            # 全透明 (transparent 模式) 就不画底色 — 跟原来 QSS 的
+            # `background: transparent` 一个意思, 让背景直接透出来
             p.fillRect(self.rect(), bg)
         w = self._border_w
         c = _qcolor(self._border_color)
@@ -440,8 +426,8 @@ class DayCell(QFrame):
     def _set_label_color(self, label: QLabel, color: str) -> None:
         """给标签换字色 — 走调色板, 不用 QSS (快一个数量级)。
 
-        挂件模式 (transparent) 下格子没有底色, 字直接压在壁纸上 ——
-        顺手加一圈描边, 否则亮壁纸上浅色字就看不见了。
+        透明模式 (transparent) 下格子没有底色, 字直接压在背景上 ——
+        顺手加一圈描边, 否则亮背景上浅色字就看不见了。
         """
         pal = label.palette()
         pal.setColor(QPalette.ColorRole.WindowText, _qcolor(color))
@@ -456,7 +442,7 @@ class DayCell(QFrame):
         # 顶部: 日期号 + 类型小图标
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
-        # 日期号和农历之间留点缝 —— 挂件里格子窄, 贴一起就糊成一团
+        # 日期号和农历之间留点缝 —— 格子窄的时候贴一起就糊成一团
         top.setSpacing(3)
         self._num_lbl = HaloLabel(str(self.day_num) if self.in_month else "")
         top.addWidget(self._num_lbl)
@@ -642,8 +628,8 @@ class DayCell(QFrame):
             self.sig_right_click.emit(self.day_iso)
         elif ev.button() == Qt.MouseButton.LeftButton:
             self.sig_single_click.emit(self.day_iso)
-        # 吃掉这次按下 — 别让它冒到父窗口去: 主窗那边会拿边缘 resize 判定,
-        # 桌面挂件那边会当成拖动挂件。点格子就是点格子。
+        # 吃掉这次按下 — 别让它冒到父窗口去: 主窗那边会拿边缘 resize
+        # 判定, 点在格子上就当点格子。
         ev.accept()
 
     def mouseDoubleClickEvent(self, ev):
@@ -751,7 +737,7 @@ class MonthView(QWidget):
         )
         for lbl in self._header_lbls:
             lbl.setStyleSheet(qss)
-            # 挂件模式表头也是压在壁纸上的字 — 一样要描边
+            # 透明模式表头也是压在背景上的字 — 一样要描边
             lbl.setHalo(self._colors.halo if self._colors.transparent else "")
 
     def apply_skin(self, skin_name: str) -> None:
@@ -764,8 +750,8 @@ class MonthView(QWidget):
     def apply_palette_override(self, **overrides) -> None:
         """只改配色里的某几项, 推给所有格子。
 
-        桌面挂件用它按壁纸亮度换字色 —— 亮壁纸用深字, 暗壁纸用浅字,
-        不然总有一半的壁纸上看不清。
+        按背景亮度换字色 —— 亮背景用深字, 暗背景用浅字,
+        不然总有一半的背景上看不清。
         """
         from dataclasses import replace
         self._colors = replace(self._colors, **overrides)

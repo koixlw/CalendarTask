@@ -20,7 +20,7 @@ from pathlib import Path
 from datetime import date
 from typing import Optional
 
-from PySide6.QtCore import Qt, QSize, QRect
+from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QImage, QPainter, QColor, QFont, QGuiApplication
 from PySide6.QtWidgets import QApplication
 
@@ -80,83 +80,6 @@ def _read_windows_original_wallpaper() -> Optional[Path]:
         pass
 
     return None
-
-
-# ── 壁纸亮度采样 (桌面挂件靠它决定字色) ──
-_wallpaper_cache: dict[str, QImage] = {}
-
-
-def _wallpaper_for_screen(screen) -> Optional[QImage]:
-    """壁纸铺满该屏幕之后的样子。
-
-    跟 Windows 的「填充」一致: 等比放大到盖住屏幕, 再居中裁掉多出来的部分。
-    结果缓存起来 — 挂件拖动时每帧都问一次亮度, 不缓存会卡。
-    """
-    if screen is None:
-        return None
-    geo = screen.geometry()
-    key = f"{screen.name()}:{geo.width()}x{geo.height()}"
-    cached = _wallpaper_cache.get(key)
-    if cached is not None:
-        return cached
-    path = _read_windows_original_wallpaper()
-    if path is None:
-        return None
-    img = QImage(str(path))
-    if img.isNull():
-        return None
-    scaled = img.scaled(
-        geo.size(),
-        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-        Qt.TransformationMode.SmoothTransformation,
-    )
-    x = max(0, (scaled.width() - geo.width()) // 2)
-    y = max(0, (scaled.height() - geo.height()) // 2)
-    cropped = scaled.copy(x, y, geo.width(), geo.height())
-    _wallpaper_cache[key] = cropped
-    return cropped
-
-
-def clear_wallpaper_cache() -> None:
-    """壁纸换了就清一下缓存 — 下次采样会重新读。"""
-    _wallpaper_cache.clear()
-
-
-def sample_brightness(screen, rect: QRect) -> float:
-    """屏幕某块区域的壁纸平均亮度 (0 = 全黑, 1 = 全白)。
-
-    rect 用全局坐标。取不到壁纸就返回 0.5 (中性) —— 挂件据此决定
-    用深色字还是浅色字。
-    """
-    if screen is None or rect is None:
-        return 0.5
-    img = _wallpaper_for_screen(screen)
-    if img is None:
-        return 0.5
-    geo = screen.geometry()
-    local = rect.translated(-geo.topLeft()).intersected(
-        QRect(0, 0, geo.width(), geo.height()))
-    if local.isEmpty():
-        return 0.5
-    region = img.copy(local)
-    if region.isNull():
-        return 0.5
-    # 缩成一小块再算平均 —— 12×12 足够代表「这块地方是亮是暗」
-    small = region.scaled(
-        12, 12,
-        Qt.AspectRatioMode.IgnoreAspectRatio,
-        Qt.TransformationMode.FastTransformation,
-    )
-    total = 0.0
-    n = 0
-    for y in range(small.height()):
-        for x in range(small.width()):
-            c = small.pixelColor(x, y)
-            total += 0.2126 * c.red() + 0.7152 * c.green() + 0.0722 * c.blue()
-            n += 1
-    if not n:
-        return 0.5
-    return max(0.0, min(1.0, total / (n * 255.0)))
 
 
 def _orig_panel_size(base_w: int, base_h: int) -> tuple[int, int]:
@@ -425,8 +348,7 @@ def restore_original_wallpaper() -> bool:
 
 __all__ = [
     "render_calendar_panel", "make_and_set_wallpaper",
-    "restore_original_wallpaper", "sample_brightness",
-    "clear_wallpaper_cache",
+    "restore_original_wallpaper",
 ]
 
 

@@ -22,7 +22,12 @@ def main() -> int:
     sub = parser.add_subparsers(dest="cmd")
 
     p_gui = sub.add_parser("gui", help="启动桌面日历窗口")
-    p_gui.add_argument("--no-fullscreen", action="store_true")
+    p_gui.add_argument(
+        "--no-fullscreen", action="store_true",
+        help="启动就是普通窗口 (默认就是这样)")
+    p_gui.add_argument(
+        "--fullscreen", action="store_true",
+        help="启动就铺满整面屏幕 (当整面桌面的日历用)")
 
     p_imp = sub.add_parser("import", help="从 DesktopCal calendar.db 导入")
     p_imp.add_argument(
@@ -71,12 +76,15 @@ def main() -> int:
     if args.cmd in (None, "gui"):
         from pycal.ui.main_window import run
         from pycal.settings import get_setting
-        # 不带子命令时 args 是顶层 Namespace, 没有 no_fullscreen 字段
-        # 启动方式: 命令行 > 设置 (「⋯ 更多 → 窗口 → 启动时铺满屏幕」) > 默认铺满
-        if getattr(args, "no_fullscreen", False):
+        # 不带子命令时 args 是顶层 Namespace, 没有 fullscreen 字段
+        # 启动方式: 命令行 > 设置 (「⋯ 更多 → 窗口 → 启动时铺满屏幕」) > 默认普通窗口
+        # 默认不铺满 —— 一弹出就占满整屏太霸道, 普通窗口能拖着挪、能缩放。
+        if getattr(args, "fullscreen", False):
+            fullscreen = True
+        elif getattr(args, "no_fullscreen", False):
             fullscreen = False
         else:
-            fullscreen = get_setting("startup_mode", "full") != "window"
+            fullscreen = get_setting("startup_mode", "window") == "full"
         return run(fullscreen=fullscreen)
     if args.cmd == "import":
         from pycal.db.connection import desktopcal_db_path

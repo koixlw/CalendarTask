@@ -27,7 +27,6 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_TESTS = [
     "test_checkbox_toggle.py",
     "test_close_behavior.py",
-    "test_desktop_widget.py",
     "test_font_scale.py",
     "test_quick_panel.py",
     "test_resize.py",

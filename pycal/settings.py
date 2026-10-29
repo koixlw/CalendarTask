@@ -1,8 +1,7 @@
 """全局配置读写 (settings 表)。
 
-主窗和桌面挂件都要读写同一张 settings 表, 所以放一个公共地方 ——
-之前读写函数写在 main_window 里, 挂件那边 import 就会绕成环
-(main_window 要 import 挂件, 挂件又要 import main_window)。
+主窗和各个子模块都要读写同一张 settings 表, 所以放一个公共地方 ——
+之前读写函数写在 main_window 里, 别的模块 import 就会绕成环。
 """
 
 from __future__ import annotations
