@@ -1,508 +1,290 @@
-# PyCal — 桌面日历复刻
+<div align="center">
 
-独立、开放的 DesktopCal 替代品。技术栈：**Python 3.11 + PySide6 + SQLite**。
+# PyCal
 
-跨平台计划：Win / macOS / Linux。Win 上额外提供「贴在桌面壁纸」能力
-（生成带日历的 PNG，`SystemParametersInfoW` 设为壁纸）。
+**一个能贴在桌面上的日历 —— 铺满整屏当背景，或者缩成角落里的小挂件。**
 
-## Phase 0 地基已完成
+[![Release](https://img.shields.io/github/v/release/koixlw/CalendarTask?label=下载)](https://github.com/koixlw/CalendarTask/releases/latest)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10%2B-3776ab.svg)](https://www.python.org/)
+[![Platform](https://img.shields.io/badge/platform-Windows-0078d4.svg)](https://learn.microsoft.com/windows/)
 
-- ✅ 独立 SQLite schema（与 DesktopCal 的 calendar.db **并存不冲突**）
-- ✅ `pycal.importer` —— 从 DesktopCal `calendar.db` 自动识别 schema 列名后导入
-- ✅ `pycal.search` —— 1:1 复刻 DesktopCal 双层搜索（SQLite FTS5 + Python 富匹配）
-- ✅ `pycal.ui` —— 月视图 + 主窗口骨架（Frameless、OnBottom、透明）
-- ✅ `pycal.desktop.wallpaper` —— 用 QPainter 渲染日历面板并设为壁纸
-- ✅ `pycal.notifier` —— 30 秒扫描 reminders 表
-- ✅ `pycal.notes` —— 桌面便签 (Frameless 浮贴纸)
-- ✅ `pycal.mcp` —— MCP server 暴露搜索/日程给 AI 代理（使用已装好的 `mcp` 2.3 SDK）
-- ✅ `tools/import_from_desktopcal.py` —— CLI 导入器
-- ✅ `tests/test_smoke.py` —— 单元测试
+[下载 Windows 版](https://github.com/koixlw/CalendarTask/releases/latest) ·
+[使用手册](docs/使用手册.md) ·
+[问题反馈](https://github.com/koixlw/CalendarTask/issues)
 
-## 目录结构
+</div>
 
-```
-e:\todo\
-├── pyproject.toml
-├── README.md                       ← 你正在读
-├── SEARCH_ANALYSIS.md              ← DesktopCal 搜索机制的证据拆解
-├── desktopcal_search.py            ← 搜索原语 + 独立 FTS5 实现 (Phase 0 前的版本)
-├── demo_search.py                  ← 9 个搜索场景的演示
-├── run.py                          ← 一键启动
-│
-├── pycal/
-│   ├── __init__.py
-│   ├── __main__.py                 ← CLI: pycal {gui,import,search}
-│   ├── db/
-│   │   ├── schema.py               ← 新 schema (calendar_items + FTS5)
-│   │   ├── connection.py           ← SQLite 连接 (WAL, thread-local)
-│   │   ├── models.py               ← CalendarItem / Note / RepeatRule / ...
-│   │   └── repository.py           ← CRUD
-│   ├── importer/
-│   │   └── __init__.py             ← 自动识别 DesktopCal schema 并导入
-│   ├── search/
-│   │   └── __init__.py             ← 复刻 DesktopCal 双层搜索 (基于新 schema)
-│   ├── ui/
-│   │   ├── main_window.py          ← Frameless OnBottom 主窗口 + 系统托盘
-│   │   ├── month_view.py           ← 6×7 月视图 (农历/节气副标题)
-│   │   ├── year_view.py            ← 年视图 (12 个小月 + 选中月详情)
-│   │   ├── editor.py               ← 4 类型编辑器
-│   │   ├── search_dialog.py        ← 5 下拉多维筛选面板 (Phase 1A)
-│   │   ├── sync_dialog.py          ← 云同步账号管理 (Phase 2)
-│   │   ├── floating_window.py      ← 可拖动 + 八向 resize
-│   │   ├── desktop_widget.py       ← 桌面挂件 (贴在桌面层, 壁纸透出来)
-│   │   ├── quick_panel.py          ← 快捷待办小窗 (点托盘图标弹出来, 随便拖)
-│   │   ├── outline_label.py        ← 描边文字 (压在壁墙上也得看清)
-│   │   ├── skin.py                 ← 4 种皮肤 + 不透明度
-│   │   ├── fonts.py                ← 字号缩放 (行高 / 格子尺寸一起跟着走)
-│   │   ├── settings_dialog.py       ← 设置 (API key 配置入口)
-│   │   └── color_picker.py         ← 22 色调色板 + 自定义 BGR
-│   ├── settings.py                 ← settings 表读写 (主窗和挂件共用)
-│   ├── desktop/
-│   │   ├── wallpaper.py            ← 读取原壁纸 + 叠加月历 + SPI_SETDESKWALLPAPER
-│   │   └── autostart.py            ← HKCU Run + WScript.Shell .lnk
-│   ├── notifier/
-│   │   └── __init__.py             ← QTimer 扫描 reminders + 接 TrayIcon
-│   ├── notes/
-│   │   └── __init__.py             ← 便签浮贴纸
-│   ├── lunar.py                    ← lunardate + 节气 + 节日 (Phase 1B)
-│   ├── report/
-│   │   ├── __init__.py             ← 日报/周报聚合 + Markdown/HTML 渲染
-│   │   └── __main__.py             ← CLI: --day/--week/--html/--auto-*
-│   ├── installer.py                ← 自启动 / 快捷方式 / 图标生成 / 卸载
-│   ├── sync/
-│   │   ├── presets.py              ← Google/iCloud/Outlook/通用 endpoint
-│   │   ├── accounts.py             ← 账号 CRUD + 凭据混淆 + sync_links
-│   │   ├── ical_convert.py         ← CalendarItem <-> VEVENT 双向转换
-│   │   ├── client.py               ← CaldavClient (连接/列举/拉取/推送/删除)
-│   │   ├── engine.py               ← SyncEngine 三方对比 + 冲突解决
-│   │   └── __main__.py             ← CLI: python -m pycal.sync
-│   └── mcp/
-│       ├── __init__.py             ← FastMCP server + 4 tools
-│       └── __main__.py
-│
-├── tests/
-│   ├── test_smoke.py               ← 基础 CRUD + 搜索
-│   ├── test_sync.py                ← 46 项 (iCal round-trip / 冲突检测)
-│   ├── test_report.py              ← 36 项 (日报/周报/HTML)
-│   ├── test_desktop_widget.py      ← 44 项 (桌面挂件: 透明皮肤/层级/字色/位置)
-│   └── test_quick_panel.py         ← 38 项 (快捷待办: 记一条/勾选写回/位置记忆)
-│
-├── assets/
-│   └── pycal.ico                   ← 7 尺寸应用图标 (运行时生成)
-│
-├── pycal.spec                      ← PyInstaller 配置
-├── build.py                        ← 一键打包脚本
-│
-└── tools/
-    └── import_from_desktopcal.py   ← CLI 导入器
-```
+---
 
-## 安装
+![PyCal 主窗口](docs/main-window.png)
+
+PyCal 是一个**离线的桌面日历**：日程、待办、提醒、倒数日都存在你自己电脑上，
+不联网也能用；想同步就自己接 CalDAV（Google / iCloud / Outlook 都支持）。
+
+界面就是一张月历 —— 双击格子写事，点左边的 ☐ 打勾，别的没了。
+
+## 能干什么
+
+| | |
+|---|---|
+| **月视图 / 年视图** | 月视图一屏看一个月，年视图一屏看一年 —— 点月份标题切，点某天直接跳过去 |
+| **一格能写多行** | 一格里的每一行都能单独打勾，不是「一个格子一个待办」 |
+| **农历和节气** | 每个日期下面带农历、二十四节气、传统节日 |
+| **桌面挂件** | 一个小月历贴在**桌面层**，格子透明让壁纸透出来，字带描边，在什么壁纸上都看得清 |
+| **快捷待办小窗** | 点右下角托盘图标就弹出来，输入框直接打字**回车就存**，不用碰鼠标 |
+| **提醒** | 到点从托盘弹通知，确认一下就消失 |
+| **日报 / 周报** | 自动从你的条目里算出完成率、每日矩阵、类型分布，还能用 AI 改写得更通顺 |
+| **云同步** | CalDAV 双向同步，冲突自动处理；同步账号和应用专用密码只存在本机 |
+| **倒数日** | 「还有 47 天」这种，日报周报里也会带上 |
+| **4 种皮肤 + 字号缩放** | 85% 到 150% 无级调，行高和格子跟着走；窗口能自由拖边缩放 |
+
+<details>
+<summary>还有这些</summary>
+
+- 桌面便签（浮贴纸）
+- 把日历暴露给 AI 代理（MCP server，4 个 tool）
+- 从 DesktopCal 导入既有数据（两库并存，不冲突）
+- Windows 开机自启（HKCU Run，不触发 UAC）、桌面快捷方式、完整卸载器
+
+</details>
+
+## 下载
+
+**Windows 用户去 [Releases 页](https://github.com/koixlw/CalendarTask/releases/latest)**
+下 `PyCal.exe` 就行 —— 单文件（约 73 MB），双击就能跑，不用装 Python。
+
+1. 下载 `PyCal.exe`
+2. 右键 → 属性 → 底部勾上「解除锁定」→ 确定
+   （Windows 10 以后从浏览器下的文件都会带这个标记，不解除 sometimes 双击没反应）
+3. 双击运行
+
+> 这是**未签名**的程序，第一次运行 SmartScreen 可能拦一下。
+> 点「更多信息」→「仍要运行」即可。
+>
+> 杀毒软件误报是 PyInstaller 单文件程序的通病（会把程序解到临时目录再跑），
+> 出现误报可以来开 issue。
+
+**数据存在 `%APPDATA%\PyCal\`**，卸载 exe 不会删掉你的日历。
+想彻底清干净：删 exe，再删 `%APPDATA%\PyCal\`。
+
+<details>
+<summary>从源码跑（macOS / Linux / 想改代码的）</summary>
+
+需要 Python 3.10+。
 
 ```bash
-pip install -e .
-# 或直接装依赖:
-pip install PySide6 mcp
+git clone https://github.com/koixlw/CalendarTask.git
+cd CalendarTask
+python -m pip install -e .
+python run.py
 ```
 
-## 命令
+或者不装包，直接跑：
 
 ```bash
-# 1) 启动 GUI
+python -m pip install PySide6 lunardate mcp caldav icalendar recurring-ical-events anthropic
 python -m pycal gui
-
-# 2) 从 DesktopCal 导入数据到 PyCal
-python -m pycal import
-
-# 3) 命令行搜索
-python -m pycal search "周报"
-
-# 4) 日报 / 周报
-python -m pycal report                    # 今天日报 (stdout)
-python -m pycal report --week             # 本周周报
-python -m pycal report --day 2026-10-21 --html --out D:/reports
-# 完整 CLI:
-python -m pycal.report --yesterday --html --open
-python -m pycal.report --last-week --out D:/reports
-python -m pycal.report --auto-daily       # 常驻, 每天 18:00 生成
-python -m pycal.report --auto-weekly      # 常驻, 每周五 17:00 生成
-
-# 5) 云同步 CLI
-python -m pycal sync list
-python -m pycal.sync --list
-python -m pycal.sync --add-google              # 交互式 (打印应用专用密码步骤)
-python -m pycal.sync --test 1
-python -m pycal.sync --sync-all --policy newest_wins
-
-# 6) 安装 / 卸载
-python -m pycal install                       # 状态查询
-python -m pycal install autostart-on          # 开机自启动 (HKCU Run)
-python -m pycal install autostart-off
-python -m pycal install shortcut              # 桌面快捷方式
-python -m pycal install uninstall             # 卸载 (保留数据)
-# 完整 CLI:
-python -m pycal.installer --status
-python -m pycal.installer --autostart on
-python -m pycal.installer --shortcut create
-python -m pycal.installer --uninstall --purge   # 连数据一起删
-
-# 7) 启动 MCP server (stdio)
-python -m pycal.mcp
-
-# 8) 打包成 exe
-python build.py                # onedir → dist/PyCal/PyCal.exe (155MB)
-python build.py --onefile      # 单文件 exe
-python build.py --install      # 打包 + 自动装自启动/快捷方式
-python build.py --icon-only    # 只生成 assets/pycal.ico
 ```
 
-## 打包发布
+</details>
 
-```bash
-pip install pyinstaller
-python build.py            # → dist/PyCal/PyCal.exe + dist/PyCal/_internal/
-python build.py --install  # 顺便写 HKCU Run 自启动 + 桌面快捷方式
-```
+## 上手
 
-| 项 | 说明 |
-|---|---|
-| 模式 | onedir (启动 ~0.3s) / `--onefile` 单文件 (启动 ~2s, 155MB) |
-| 图标 | `assets/pycal.ico` — 7 尺寸 (16→256) PNG-compressed 32bpp，运行时用 PySide6 现生成 |
-| 自启动 | HKCU `Run` 键（不需要管理员权限，不触发 UAC）|
-| 卸载 | `python -m pycal install uninstall` 移除自启+快捷方式；加 `--purge` 连数据目录 |
-| 体积优化 | `pycal.spec` 里 EXCLUDES 排掉 QtWebEngine/QtQuick/科学计算等，450MB → 155MB |
+### 写第一条
 
-## 日报 / 周报
+**双击**格子里的空白处 → 弹出编辑器 → 写内容 → 保存。
 
-数据来自 `calendar_items`，自动按 `[+]` 完成标记统计行级完成率。
-
-**日报**：日期+农历+星期 → 概览表（条目数/总行/完成/未完成/完成率进度条）→ 按类型分组（格子/重复/提醒/倒数日）→ 30 天内倒数日
-
-**周报**：ISO 周编号 → 本周总览 → 每日完成矩阵（含完成率条 + 🟢/🟡/🔴 评级）→ 类型分布 → 高频关键词（TF 提取）→ 逐日明细 → 下周预告 → 倒数日
-
-| 入口 | 位置 |
-|---|---|
-| GUI | 工具栏「📑 日报」或「⋯ 更多 → 生成日报 / 周报」→ 预览/复制/保存 MD/导出 HTML/打印 PDF |
-| 自动 | 主窗每 30 分钟检查：日报每天 18:00 后生成一次、周报每周五 17:00 后生成一次 → `%APPDATA%\PyCal\reports\` |
-| CLI | `python -m pycal report [--day D] [--week] [--html] [--out PATH] [--open]` |
-| 常驻 | `python -m pycal.report --auto-daily` / `--auto-weekly` |
-
-HTML 导出带内联 CSS + `@media print`，浏览器直接 Ctrl+P 就是 PDF。
-
-**修了一个真 bug**：完成标记正则在三个文件里都写成了 `\[+\]`（`+` 被当成量词，只匹配 `[]`），DesktopCal 的 Lua 是 `%[%+%]` = 字面 `[+]`。已统一改成 `\s*\[\s*\+\s*\]\s*`。
-
-## AI 润色 (Claude)
-
-用 Claude 把日报/周报改写得更通顺、更专业或更有洞察。
-
-### 配置（界面里填就行）
-
-**界面入口**（推荐）：工具栏 `⋯ 更多 → 🔑 AI 润色 API key`（快捷键 `Ctrl+,`）。
-粘进去 → 保存 → 立刻生效，不用重启。
-
-其它两个入口都通向同一个设置窗口：
-
-- 点 `✨ AI 日报` 时没配 key → 弹窗里直接点「🔑 现在配置」
-- 报告窗口 / AI 润色窗口里的 `🔑 配置` 按钮
-
-Key 从 https://console.anthropic.com/settings/keys 获取。
-
-**存放方式**：填在界面里的 key 存在本机 PyCal 数据库的 `settings` 表里，
-用 base64 + XOR 打乱（跟 CalDAV 密码一个路子）—— 只防「随手打开 DB 看到明文」，
-不是强加密。想完全不留痕就删掉它，改用环境变量：
-
-```powershell
-# 当前会话
-$env:ANTHROPIC_API_KEY = "sk-ant-..."
-
-# 永久（用户级）
-[Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", "sk-ant-...", "User")
-```
-
-界面里存的 key 优先于环境变量（改了环境变量不生效的话，先去设置里清一下界面里那个）。
-**key 不写日志、不进异常信息。**
-
-### 用法
-
-```bash
-# GUI: 报告窗口点 [✨ AI 润色]
-#      可选风格 + 填补充说明 + 原始/润色双 Tab 对比 + 流式显示
-
-# CLI — 报告命令加 --polish
-python -m pycal report --polish
-python -m pycal report --week --polish --style concise,analysis
-python -m pycal report --week --polish --note "评审延期是因为等设计稿"
-
-# 独立 CLI (更细的选项)
-python -m pycal.report.ai_polish_cli --check          # 测连通性
-python -m pycal.report.ai_polish_cli --week --stream  # 流式
-python -m pycal.report.ai_polish_cli --week --all-styles  # 4 种风格各出一版对比
-python -m pycal.report.ai_polish_cli --week --model claude-haiku-4-5  # 换模型
-```
-
-### 4 种风格（可多选叠加）
-
-| key | 名称 | 作用 |
-|---|---|---|
-| `concise` | 简洁精炼 | 压缩表述，删冗余词，保留数字 |
-| `professional` | 专业正式 | 商业书面语，总-分-总结构 |
-| `friendly` | 轻松友好 | 第一人称口语化，适合团队分享 |
-| `analysis` | 带复盘分析 | 增加「复盘」小节：分析完成率原因 + 可执行建议 |
-
-### 模型选择
-
-| 模型 | 用途 | 成本 (日报) |
-|---|---|---|
-| `claude-sonnet-5` | 默认，质量优先 | ~$0.035 |
-| `claude-haiku-4-5` | 最快最便宜 | ~$0.006 |
-| `claude-opus-5-5` | 深度复盘分析 | ~$0.18 |
-
-### 防编造设计
-
-System prompt 里写死了 5 条硬约束：
-
-1. **绝不编造事实** — 所有数字/日期/百分比/条目名/完成状态必须与原文一致
-2. **不改变事实语义** — 「完成率 60%」不能变成「完成率不错」
-3. **不添加原文没有的结论** — 数据不足就写「数据不足」
-4. **保留全部 Markdown 结构** — 标题层级、表格、`[ ]`/`[x]` 语法
-5. **保留所有条目** — 原文有的每一条都不能丢
-
-另外「补充说明」输入框让你手动补充 AI 不知道的上下文（比如"评审延期是因为等设计稿，不算拖延"）。
-
-### 错误处理
-
-SDK 异常分级映射到中文提示：429 速率限制 / 401 key 无效 / 403 权限不足 / 404 模型不存在 / 529 服务端繁忙 / 超时 / token 超限。
-
-## 云同步说明 (CalDAV)
-
-| 项目 | 说明 |
-|---|---|
-| 协议 | CalDAV (RFC 4791) — Google / iCloud / Outlook / Nextcloud 都支持 |
-| 认证 | **应用专用密码**（不是主账号密码）。各服务商的申请链接在 UI 和 CLI 里都会打印 |
-| 冲突策略 | `newest_wins`（默认，按 LAST-MODIFIED 时间戳）/ `local_wins` / `remote_wins` |
-| 只读模式 | 勾选后该账号只做 PULL，绝不修改云端 |
-| 方向 | `both` / `pull`（只云→本地）/ `push`（只本地→云） |
-| 自动同步 | 主窗启动 10 秒后首跑，之后每 15 分钟一次；无账号时静默跳过 |
-| 凭据存储 | base64 + XOR 打乱落本地 DB。**这是防"随手打开 DB 看明文"，不是加密**。生产环境应换 Windows Credential Manager |
-| 私有扩展 | `X-PYCAL-COLOR` / `X-PYCAL-TYPE` / `X-PYCAL-COUNTDOWN` / `X-PYCAL-PRIORITY`，其他客户端会忽略 |
-
-**OAuth 尚未实现**：三家都需要 client_id/secret 申请流程，MVP 先走应用专用密码路线。
-
-## 界面与交互
-
-### 工具栏
+内容可以写多行：
 
 ```
-📅 PyCal │ ◀ 2026 年 10 月 ▶ [今天] [📆 年视图] │        [📑 日报] [✨ AI 日报] [🔍 搜索] [⋯ 更多] [? 帮助] │ [— 收起] [□ 最大化] [× 退出]
+写周报
+修同步 bug
+回邮件
 ```
 
-- **常用功能直接写在按钮上**，不靠猜图标
-- **低频功能收进「⋯ 更多」** —— 分「常用 / 数据 / 外观 / 帮助 / 窗口」五组，
-  每一项都有中文名 + 一句话说明 + 快捷键
-- **`? 帮助`**（或按 <kbd>F1</kbd>）打开三页说明：基本用法 / 功能清单 / 快捷键
-- 窗口控制按钮写清楚了点了会发生什么（`— 收起` 是藏到托盘，`× 退出` 才是真退出）
+每一行都是独立的一条，能单独打勾。
 
-### 年视图
+### 打勾
 
-点工具栏「📆 年视图」（或按 <kbd>Y</kbd>）切到年视图：
+点文字**左边**的 ☐。一格写了多行的话，点哪行勾哪行。
 
-```
-┌ 2026 年 · 全年总览  ‹ › ────────────────────────┐
-│   1月      2月      3月      4月                 │
-│ 一二三四五六日 × 12 个月的小格子 (3 行 × 4 列)    │
-│   5月      6月      7月      8月                 │
-│   9月     10月     11月     12月                 │
-├─────────────────────────────────────────────────┤
-│   10 月的完整详情 (就是那块月视图)                 │
-└─────────────────────────────────────────────────┘
-```
-
-- **每个小月也是「以月为单位、周一到周日」**，跟大月视图一个排法
-- 有条目的日子**加粗变蓝**，今天是黄底圆圈，周末那两列偏红，非本月淡灰
-- 点**月份标题**选中那个月，点**某一天**直接跳到那天
-- 下面那块详情直接复用月视图 —— 勾选、双击编辑、右键菜单全都一样
-- 年视图下 <kbd>◀</kbd> <kbd>▶</kbd> 走的是详情里的月（跨年就跟着换年），
-  年份头里的 `‹ ›` 直接翻年
-
-### 字体大小自己调
-
-月视图默认是 8pt 的条目字（配合 15px 行高，一格里塞 5 条）。嫌小就调：
-
-| 位置 | 操作 |
-|---|---|
-| 选一档 | `⋯ 更多 → 字体大小` → 小 85% / 标准 100% / 大 115% / 特大 130% / 巨大 150% |
-| 一档一档微调 | `⋯ 更多 → 字体大小 → 放大 / 缩小一档` → <kbd>A+</kbd> / <kbd>A−</kbd>（每次 5%） |
-| 改回去 | `⋯ 更多 → 字体大小 → 恢复默认` |
-
-- 工具栏、月视图、状态栏**一起缩**，不是只改格子里的字
-- 编辑器 / 搜索 / 帮助这些对话框也跟着放大（它们用的是系统默认字号）
-- 行高、☐ 宽度、工具栏高度跟着字号一起长；字越大一格显示的条数越少（5 → 4 → 3 → 2），
-  放不下的折成「+N 更多」，所以放大后字不会被裁掉
-- 比例存在 `settings` 表的 `font_scale` 键，**重启后还是这个大小**
-
-### 窗口可以自由缩放
-
-点工具栏「□ 铺满屏幕 / □ 收成窗口」在两种状态之间切换（也可双击工具栏空白处）：
-
-- **铺满屏幕** —— 启动时的默认状态，当桌面日历用
-- **普通窗口** —— 点一下收成窗口，拖四边和四角自由缩放，最小能缩到 **616×405**
-
-窗口变窄时工具栏会自动收成纯图标（`📑 ✨ 🔍 ⋯ ？ — □ ×`），
-月份标签也换成短写法（`26年10月`），鼠标悬停仍有完整说明。
-所以缩到巴掌大也不会把按钮挤没。
-
-铺满屏幕时**不响应边缘缩放** —— 那时候拖的是屏幕边缘，不是窗口边缘。
-
-### 月视图只画这个月
-
-- 每周从星期一开始，列头是「一 二 三 四 五 六 日」
-- **只画这个月真正占到的周**：10 月占 5 周就画 5 周，不会在底下空出
-  一整行 11 月
-- 不是本月的格子留着位置（好对齐）但**不显示日期号，也不显示农历**
-
-### 关窗 ≠ 退出
-
-PyCal 默认驻留后台，提醒和自动同步靠它。关窗行为是：
+### 其他操作
 
 | 操作 | 结果 |
 |---|---|
-| 首次按 <kbd>Alt+F4</kbd> / 任务栏 ✕ / <kbd>Esc</kbd> | 弹框问「收起到托盘」还是「直接退出」，并说明各自后果 |
-| 之后按关窗 | 静默按上次的选择执行，弹一次托盘气泡告知还在后台 |
-| 点「— 收起」 | 直接收起到托盘，不弹框 |
-| 点「× 退出」 | 永远真退出，不受上面的设置影响 |
-| 系统没有托盘 | 关窗即退出（否则窗口藏起来就再也找不回来了） |
-
-选择记在 `settings` 表的 `close_behavior` / `close_hint_shown`，
-随时能在「⋯ 更多 → 关闭窗口时」里改。
+| 双击条目的文字 | 打开编辑器改 |
+| 右键格子 | 新建（格子 / 重复任务 / 提醒 / 倒数日）、编辑、删除、复制 |
+| 点左下角 ☐ | 一键把今天没做完的都勾上 |
 
 ### 快捷键
 
 | 键 | 作用 |
 |---|---|
-| <kbd>F1</kbd> | 帮助 |
-| <kbd>Ctrl+N</kbd> | 今天新建条目 |
-| <kbd>Ctrl+F</kbd> | 搜索 |
-| <kbd>Ctrl+R</kbd> | 日报 / 周报 |
-| <kbd>Ctrl+Shift+R</kbd> | AI 润色 |
-| <kbd>Ctrl+S</kbd> | 云同步 |
-| <kbd>Ctrl+T</kbd> | 回到今天 |
+| <kbd>F1</kbd> | 帮助（应用内三页说明） |
+| <kbd>F11</kbd> | 铺满屏幕 / 收成窗口（收成后能自由缩放） |
+| <kbd>Ctrl</kbd>+<kbd>N</kbd> | 今天新建条目 |
+| <kbd>Ctrl</kbd>+<kbd>F</kbd> | 搜索 |
+| <kbd>Ctrl</kbd>+<kbd>R</kbd> | 日报 / 周报 |
+| <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd> | AI 润色 |
+| <kbd>Ctrl</kbd>+<kbd>S</kbd> | 云同步 |
+| <kbd>Ctrl</kbd>+<kbd>T</kbd> | 回到今天 |
 | <kbd>Y</kbd> | 切换年视图 / 月视图 |
-| <kbd>F5</kbd> | 重新拉取数据 |
-| <kbd>Esc</kbd> | 关闭窗口（同 Alt+F4） |
+| <kbd>Esc</kbd> | 关闭窗口（默认收起到托盘，程序继续在后台跑） |
 
-### 格子怎么用
+## 桌面集成
 
-- **双击空白处** → 新建条目
-- **双击条目文字** → 打开编辑器
-- **单击左侧 ☐** → 勾选完成（多行条目里点哪行勾哪行）
-- **右键格子** → 新建（格子 / 重复任务 / 提醒 / 倒数日）、编辑、删除、复制
+### 快捷待办小窗
 
-## 桌面集成（贴在桌面上）
+![快捷待办小窗](docs/quick-panel.png)
 
-### 快捷待办小窗（点右下角托盘图标）
+**单击**右下角托盘图标就弹出来。输入框自动带焦点，**打完字按回车就存成今天的待办**，
+一次写多行就是好几条。
 
-**单击**任务栏右下角的 PyCal 托盘图标，弹出来一张小卡片：
+面板随便拖，挪到哪下次打开还在原地。里面勾掉的待办，月视图格子里的 ☐ 跟着变。
 
-```
-┌────────────────────────────────────┐
-│ 2026年10月28日 星期三 九月十九   ✓ ✕ │
-│ [ 记一条待办, 回车直接存      ] [＋添加] │
-│ ☐ 改同步 bug                          │
-│ ☑ 回邮件                              │
-│ ↻ 站会                                │
-│ 还剩 2 项待办            打开主窗口   │
-└────────────────────────────────────┘
-```
+### 桌面挂件
 
-| 入口 | 位置 |
+![桌面挂件](docs/desktop-widget.png)
+
+一个小月历贴在**桌面层** —— 别的窗口能盖住它，不会跳出来抢你正在写的东西。
+格子透明，壁纸从缝里直接透出来；文字自带描边，所以深色浅色壁纸都看得清，
+色还会跟着你那块壁纸的亮度自动反。
+
+想让它浮在最上面，在挂件标题栏的「⋯」里切「永远置顶」。
+
+### 关窗 ≠ 退出
+
+PyCal 默认驻留后台 —— 提醒和自动同步靠它。
+
+| 操作 | 结果 |
 |---|---|
-| 打开 | **单击右下角托盘图标** |
-| 打开 | 工具栏「⋯ 更多 → 快捷待办小窗…」 |
-| 开关 | 托盘图标右键 →「快捷待办」 |
-| 收起 | 面板右上角「✕」或按 <kbd>Esc</kbd> |
+| <kbd>Alt</kbd>+<kbd>F4</kbd> / 任务栏 ✕ | 第一次弹框问「收起到托盘」还是「直接退出」；之后按上次的来 |
+| 点「— 收起」 | 直接收起到托盘 |
+| 点「× 退出」 | 永远真退出 |
 
-- **随手记**：面板一弹出来输入框就带焦点，**回车直接存**，不用碰鼠标；
-  一次写多行就是好几条
-- **整块卡片随便拖** —— 按住标题栏或者空白处都能挪，位置记在 `settings` 里，
-  下次打开还在原地（屏幕变了会自动拉回可见范围）
-- **跟月视图是同一份数据** —— 面板里勾掉的待办，月视图格子里的 ☐ 跟着变；
-  双击某一行能直接打开条目编辑器
-- 标题栏「✓」一键把今天没做完的都勾上
-- **双击托盘图标**＝打开主窗口（单击是快捷小窗，两个不打架）
-- 一直浮在最上面，但**不进任务栏**（`Qt.Tool`）
+托盘图标：**单击** = 快捷待办小窗，**双击** = 打开主窗口，右键 = 菜单。
 
-### 桌面挂件（推荐）
+## 年视图
 
-一个贴在**桌面层**的小月历 —— 屏幕角落，壁纸从格子缝里直接透出来，
-字自带描边所以在什么壁纸上都看得清。
+![年视图](docs/year-view.png)
 
-| 入口 | 位置 |
-|---|---|
-| 打开 | 工具栏「⋯ 更多 → 桌面挂件 (贴在桌面上的小日历)」 |
-| 开关 | 托盘图标右键 →「桌面挂件」 |
-| 设置 | 挂件标题栏「⋯」或标题栏右键 |
+点工具栏「📆 年视图」（或按 <kbd>Y</kbd>）。
 
-- **贴在桌面层**（`WindowStaysOnBottomHint`）—— 别的窗口盖得住它，
-  不会跳出来抢你正在写的文档；想浮在最上面，菜单里切「永远置顶」
-- **拖标题栏**挪位置，位置记在 `settings` 里，重启还在
-- **字色跟着壁纸亮度自动反色** —— 亮壁纸用深字带白描边，暗壁纸用浅字带黑描边
-  （采样当前壁纸那块区域的平均亮度，见 `pycal.desktop.wallpaper.sample_brightness`）
-- 也能手动锁：菜单里选「深色字 / 浅色字」
-- 三个大小档（小 / 中 / 大）＝ 字号比例 70% / 85% / 100%
-- 跨零点自动翻到今天；勾选、编辑、右键菜单跟主窗一模一样
+一屏摆下 12 个小月，有条目的日子**加粗变蓝**，今天是黄底圆圈，周末那两列偏红。
+点**月份标题**选中那个月，点**某一天**直接跳到那天。
 
-### 壁纸叠加（老办法）
+下面那块详情就是完整的月视图 —— 勾选、双击编辑、右键菜单都跟平时一模一样。
 
-`pycal.desktop.wallpaper.make_and_set_wallpaper()` 会：
-1. 用 QPainter 在屏幕右下角渲染本月日历面板
-2. 保存到 `%TEMP%/pycal_wallpaper_YYYYMM.png`
-3. 调 Windows API `SystemParametersInfoW(SPI_SETDESKWALLPAPER)` 设为新壁纸
+## 日报 / 周报
 
-调试时可以只生成不设置：
-```python
-from pycal.desktop.wallpaper import render_calendar_panel
-img = render_calendar_panel(2026, 10)
-img.save("out.png")
+工具栏「📑 日报」。自动从条目里算出：
+
+- **完成率**（按行统计，不是按条）
+- **每日完成矩阵** + 🟢🟡🔴 评级
+- **类型分布**、**高频关键词**
+- **倒数日**、**下周预告**
+
+可以存成 Markdown、导出 HTML（带打印样式，浏览器 <kbd>Ctrl</kbd>+<kbd>P</kbd> 就是 PDF），
+也可以让 AI 改写得更通顺、更专业。
+
+<details>
+<summary>AI 润色要配 key</summary>
+
+界面里填就行：工具栏「⋯ 更多 → 🔑 AI 润色 API key」（或 <kbd>Ctrl</kbd>+<kbd>,</kbd>）。
+Key 从 [console.anthropic.com](https://console.anthropic.com/settings/keys) 拿。
+
+不想在界面里留痕就用环境变量：
+
+```powershell
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
 ```
 
-想看挂件叠在真壁纸上是什么样：
+</details>
+
+## 云同步
+
+支持 CalDAV：Google、iCloud、Outlook、还有自建的 Nextcloud 等。
+
+工具栏「⋯ 更多 → 云同步」。**注意要用应用专用密码，不是主账号密码** ——
+各服务商的申请链接在界面里会直接给你。
+
+- 冲突策略：默认按「最新修改的赢」，也能改成「本地赢」或「云端赢」
+- 可以设成只读（只拉不推）、或单向（只拉 / 只推）
+- 后台每 15 分钟自动同步一次
+
+> OAuth 还没做，得走应用专用密码。
+
+## 命令行
+
+装了之后有这些命令：
+
 ```bash
-python tools/shot_widget.py     # → build/widget_shot.png
+pycal gui                                  # 起界面
+pycal import                               # 从 DesktopCal 导入
+pycal search "周报"                         # 命令行搜索
+pycal report --week --html --out ./out     # 生成本周周报 (HTML)
+pycal sync list                            # 列出同步账号
+pycal install --status                     # 看安装状态
+pycal --version
 ```
 
-想看快捷待办小窗长什么样：
+不带 `pycal` 的话用 `python -m pycal ...`，效果一样。
+
+完整列表见 [使用手册](docs/使用手册.md)。
+
+## 数据和隐私
+
+- **所有数据都在本机**：`%APPDATA%\PyCal\db\pycal.db`，一个 SQLite 文件
+- PyCal **不往任何第三方发数据**
+- 唯一的对外请求是你自己配的 CalDAV 服务器，以及你点了「AI 润色」时的 Anthropic API
+- 界面里填的 API key 和 CalDAV 密码存在同一个 DB 里，用 base64 + XOR 混淆
+  —— **这是防「随手打开 DB 看到明文」，不是加密**。想更稳就用环境变量
+  （`ANTHROPIC_API_KEY`），或者别在本机存。
+
+## 开发
+
 ```bash
-python tools/shot_quick_panel.py     # → build/quick_panel_shot.png
+python -m pip install -e .
+python -m pytest tests/ -q     # 跑测试
+python build.py --onefile      # 打包成单文件 exe
 ```
 
-## 数据兼容性
+打包成 exe 需要 `pip install pyinstaller`。
 
-PyCal 与 DesktopCal 共存时：
-- PyCal 默认 DB 在 `%APPDATA%/PyCal/db/pycal.db`
-- DesktopCal DB 在 `%APPDATA%/CalendarTask/db/calendar.db`（只读，不要 PyCal 写它）
+发布流程：改 `pycal/__init__.py` 里的 `__version__`，打 `v*` 标签，
+GitHub Actions 自动打包并发布 Release。
 
-`pycal.importer` 通过 `PRAGMA table_info` 自动适配多种 schema
-（旧版 `item_table`，新版 `item`，甚至自定义名都能识别），
-只读取 `type != 4`（课程表）的条目导入到 PyCal。
+细节看 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [技术细节](docs/技术细节.md)。
+搜索是怎么实现的，见 [DesktopCal 搜索机制复盘](SEARCH_ANALYSIS.md)。
 
-## 后续 Phase
+## 常见问题
 
-| Phase | 范围 | 状态 |
-|---|---|---|
-| 0: 地基 | schema + 导入 + 搜索 + UI 占位 + MCP + wallpaper + notifier + 笔记 | ✅ |
-| 1: 编辑器 | 4 类型条目编辑器、22 色调色板、点击/双击/右键 UX、颜色条、类型图标 | ✅ |
-| 1A: 搜索面板 | 5 下拉多维筛选面板（复刻 history_search.lua 全套）+ 即时重搜 + 双击跳转 | ✅ |
-| 1B: 农历副标题 | lunardate 后端 + 24 节气 + 节日（春节/端午/中秋 等） | ✅ |
-| 1C: 通知调度 | QSystemTrayIcon + 30s 轮询 + 左键切换显隐 + 右键菜单 + 提醒二次确认 | ✅ |
-| 1D: 壁纸叠加 | 读 Windows 注册表的当前壁纸 + QPainter 叠月历 + 一键还原 `restore_original_wallpaper` | ✅ |
-| **3: UX 细节** | **可拖动主窗 + 八向 resize + 4 种皮肤 + 月份切换 slide 动画 + 置顶切换 + 不透明度调节 + 字体大小可调** | **✅** |
-| **2: 云同步** | **CalDAV 双向同步 (Google / iCloud / Outlook / 通用) + 三方冲突解决 + 后台自动同步 + CLI + 管理 UI** | ✅ |
-| **日报/周报** | **从 calendar_items 聚合生成 Markdown/HTML，含完成率、每日矩阵、类型分布、关键词、倒数日；GUI 预览 + CLI + 定时自动生成** | **✅ 本轮** |
-| **4: 发布** | **PyInstaller 打包 (155MB onedir) + 多尺寸 .ico 图标 + HKCU Run 自启动 + 桌面快捷方式 + 卸载器** | **✅ 本轮** |
-| **桌面挂件** | **贴在桌面层的小月历：格子透明让壁纸透出来 + 描边文字 + 按壁纸亮度自动反色 + 可拖动可换层级** | **✅ 本轮** |
+**Q：杀毒软件报毒？**
+单文件 exe 会把自己解到临时目录再运行，误报很常见。程序本身不发任何网络请求
+（除了你配的同步账号和 AI 润色）。
 
-## 已知限制
+**Q：装在别的电脑上数据会丢吗？**
+不会丢 —— 数据在 `%APPDATA%`，跟程序装在哪没关系。但 exe 本身不跨机器通用，
+每个平台要单独打包。
 
-1. **`pycal.mcp` 没注册到系统的 MCP client**，需要在 Claude Desktop / IDE 中手动配置。
-2. **自动启动**未集成（HKCU Run 注册可加）。
-3. **壁纸原图**：当 Windows 没设置壁纸时，`make_and_set_wallpaper()` 会落回纯日历面板 (`overlay=False`)。
+**Q：能同步到手机吗？**
+PyCal 走标准 CalDAV，只要你的手机端日历 App 也支持 CalDAV（比如 iOS 自带的
+「日历」App 里的「其他账户 → CalDAV」），就能一起用。
+
+**Q：为什么关掉窗口程序还在？**
+提醒和自动同步需要它常驻。点工具栏「× 退出」才是真退出。
+
+## 致谢
+
+- [PySide6](https://doc.qt.io/qtforpython/) —— 界面
+- [lunardate](https://pypi.org/project/lunardate/) —— 农历换算
+- [CalDAV](https://tools.ietf.org/html/rfc4791) —— 同步协议
+
+## 说明
+
+PyCal 是**独立实现**，与 DesktopCal 及其厂商没有任何关联，也不包含它们的代码。
+
+## License
+
+[MIT](LICENSE)

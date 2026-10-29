@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: 装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest PySide6 lunardate mcp caldav icalendar recurring-ical-events anthropic
+
+      - name: 跑测试
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONIOENCODING: utf-8
+        run: python -m pytest tests/ -v
+
+  build:
+    runs-on: windows-latest
+    needs: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller PySide6 lunardate mcp caldav icalendar recurring-ical-events anthropic
+
+      - name: 打包 (onefile)
+        run: python build.py --clean --onefile
+
+      - name: 确认产物
+        run: |
+          if (-not (Test-Path dist\PyCal.exe)) { throw "没打出 dist\PyCal.exe" }
+          $sz = (Get-Item dist\PyCal.exe).Length / 1MB
+          Write-Host "PyCal.exe = $sz MB"
+          if ($sz -lt 40) { throw "产物只有 $sz MB, 明显不对" }
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: PyCal-windows-x64
+          path: dist/PyCal.exe
+          if-no-files-found: error

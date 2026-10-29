@@ -1,0 +1,95 @@
+name: Release
+
+# 打 v* 标签 → 自动打包 → 自动建 GitHub Release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的标签 (如 v1.0.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller PySide6 lunardate mcp caldav icalendar recurring-ical-events anthropic
+
+      - name: 核对版本号
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
+          if ($tag -notmatch '^v(\d+\.\d+\.\d+)$') { throw "标签格式不对: $tag" }
+          $want = $Matches[1]
+          $got = (python -c "import pycal; print(pycal.__version__)").Trim()
+          if ($want -ne $got) { throw "标签 $tag 和 pycal.__version__ ($got) 对不上" }
+          Write-Host "版本一致: $got"
+
+      - name: 跑测试
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONIOENCODING: utf-8
+        run: python -m pytest tests/ -q
+
+      - name: 打包 (onefile)
+        run: python build.py --clean --onefile
+
+      - name: 确认产物
+        run: |
+          if (-not (Test-Path dist\PyCal.exe)) { throw "没打出 dist\PyCal.exe" }
+          $sz = (Get-Item dist\PyCal.exe).Length / 1MB
+          Write-Host "PyCal.exe = $sz MB"
+          if ($sz -lt 40) { throw "产物只有 $sz MB, 明显不对" }
+
+      - name: 生成校验和
+        shell: pwsh
+        run: |
+          $h = (Get-FileHash dist\PyCal.exe -Algorithm SHA256).Hash.ToLower()
+          "$h  PyCal.exe" | Out-File -Encoding ascii dist\PyCal.exe.sha256
+          Write-Host "sha256 = $h"
+
+      - name: 建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/PyCal.exe
+            dist/PyCal.exe.sha256
+          generate_release_notes: true
+          draft: true
+          body: |
+            ## 下载
+
+            **PyCal.exe** — 单文件版，双击就能跑，不用装 Python。
+
+            - 免安装：下载后右键 → 属性 → 勾「解除锁定」→ 双击运行
+            - 数据存在 `%APPDATA%\PyCal\`，卸载 exe 不会删数据
+            - 想彻底卸载：删 exe + 删 `%APPDATA%\PyCal\`
+
+            ## 说明
+
+            这是未签名的 Windows 程序，第一次运行时 SmartScreen 可能拦一下。
+            点「更多信息」→「仍要运行」即可。
+
+            校验和见同目录的 `PyCal.exe.sha256`。
+
+            ## 反馈
+
+            有问题请开 [issue](https://github.com/${{ github.repository }}/issues)。
+
+            > PyCal 是独立实现，与 DesktopCal 及其厂商无任何关联。

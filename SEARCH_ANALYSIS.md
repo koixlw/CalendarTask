@@ -1,6 +1,6 @@
 # DesktopCal 搜索机制 — 证据复盘
 
-> 所有引用的文件路径均位于 `C:\Users\Administrator\AppData\Roaming\CalendarTask\app\dkappcal\resource.zip` 内部，
+> 引用的两个文件位于 DesktopCal 安装目录的 `app/dkappcal/resource.zip` 内部，
 > 即 `config/search.lua` 和 `config/history_search.lua`。压缩包外的其他 dkappcal 资源（frame.xml / subs_func.lua 等）也参与渲染，
 > 但搜索逻辑完全集中在这两个 Lua 文件中。
 
@@ -94,7 +94,7 @@ DesktopCal 的做法（三道防线）：
 
 ---
 
-## 5. 我的实现（`desktopcal_search.py`）
+## 5. 我的实现（`pycal/search/primitives.py`）
 
 照双层架构 1:1 复刻：
 
